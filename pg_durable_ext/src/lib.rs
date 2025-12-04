@@ -535,14 +535,14 @@ fn hello(name: &str) -> String {
 extension_sql!(
     r#"
 -- Operator ~> for sequencing: a ~> b means "run a, then run b"
-CREATE OPERATOR durable.~> (
+CREATE OPERATOR ~> (
     FUNCTION = durable.seq,
     LEFTARG = text,
     RIGHTARG = text
 );
 
 -- Operator |=> for naming: 'name' |=> fut means "name this result as $name"
-CREATE OPERATOR durable.|=> (
+CREATE OPERATOR |=> (
     FUNCTION = durable.as,
     LEFTARG = text,
     RIGHTARG = text
