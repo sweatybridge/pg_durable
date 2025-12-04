@@ -531,6 +531,27 @@ fn hello(name: &str) -> String {
     format!("Hello, {}! (workflow would run here)", name)
 }
 
+// Create custom SQL operators for workflow chaining
+extension_sql!(
+    r#"
+-- Operator ~> for sequencing: a ~> b means "run a, then run b"
+CREATE OPERATOR durable.~> (
+    FUNCTION = durable.seq,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+
+-- Operator |=> for naming: 'name' |=> fut means "name this result as $name"
+CREATE OPERATOR durable.|=> (
+    FUNCTION = durable.as,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+"#,
+    name = "create_operators",
+    requires = [then_fn, as_named]
+);
+
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
