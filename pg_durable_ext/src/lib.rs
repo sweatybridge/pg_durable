@@ -15,14 +15,33 @@ use duroxide::{
 ::pgrx::pg_module_magic!(name, version);
 
 // ============================================================================
-// Background Worker
+// Duroxide Configuration
+// ============================================================================
+
+/// Path to the shared SQLite database for duroxide.
+/// This is used by both the background worker and client functions.
+fn duroxide_db_path() -> String {
+    // Use a path that's accessible by the background worker
+    // Using the user's home directory is more reliable than /tmp
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    format!("{}/pg_durable_duroxide.db", home)
+}
+
+/// Connection string for the duroxide SQLite store
+/// Note: SqliteProvider expects just a file path (not sqlite:// URI)
+fn duroxide_connection_string() -> String {
+    duroxide_db_path()
+}
+
+// ============================================================================
+// Background Worker - Duroxide Runtime
 // ============================================================================
 
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
-    // Register the background worker when the extension is loaded
-    BackgroundWorkerBuilder::new("pg_durable_worker")
-        .set_function("background_worker_main")
+    // Register the duroxide background worker
+    BackgroundWorkerBuilder::new("pg_durable_duroxide")
+        .set_function("duroxide_worker_main")
         .set_library("pg_durable_ext")
         .set_argument(0i32.into_datum())
         .enable_spi_access()
@@ -31,37 +50,98 @@ pub extern "C-unwind" fn _PG_init() {
         .load();
 }
 
-/// Main background worker function - polls for pending workflows and executes them
+/// Main duroxide background worker - runs the duroxide runtime continuously
 #[pg_guard]
 #[no_mangle]
-pub extern "C-unwind" fn background_worker_main(_arg: pg_sys::Datum) {
+pub extern "C-unwind" fn duroxide_worker_main(_arg: pg_sys::Datum) {
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM);
     
-    log!(
-        "pg_durable background worker started, polling for pending workflows..."
-    );
+    log!("pg_durable: duroxide background worker starting...");
     
-    // Connect to the database
-    BackgroundWorker::connect_worker_to_spi(Some("pg_durable_ext"), None);
+    // Create tokio runtime for async duroxide
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build() 
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            log!("pg_durable: failed to create tokio runtime: {}", e);
+            return;
+        }
+    };
     
-    // Main work loop
-    while BackgroundWorker::wait_latch(Some(Duration::from_secs(2))) {
-        if BackgroundWorker::sighup_received() {
-            // Reload configuration if needed
+    // Run duroxide in the tokio runtime
+    rt.block_on(async {
+        run_duroxide_runtime().await;
+    });
+    
+    log!("pg_durable: duroxide background worker terminated");
+}
+
+/// Run the duroxide runtime - this is the main async loop
+async fn run_duroxide_runtime() {
+    log!("pg_durable: initializing duroxide runtime with SQLite store...");
+    
+    // Create file-based SQLite store (shared with client)
+    let db_path = duroxide_connection_string();
+    let store = match duroxide::providers::sqlite::SqliteProvider::new(&db_path, None).await {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            log!("pg_durable: failed to create SQLite store at {}: {}", db_path, e);
+            return;
         }
+    };
+    
+    log!("pg_durable: SQLite store created at {}", duroxide_db_path());
+    
+    // Register activities
+    let activities = ActivityRegistry::builder()
+        // Simple greeting activity
+        .register("Greet", |_ctx: ActivityContext, input: String| async move {
+            Ok(format!("Hello, {}!", input))
+        })
+        // SQL execution activity (placeholder for future)
+        .register("ExecuteSQL", |ctx: ActivityContext, query: String| async move {
+            ctx.trace_info(format!("Would execute SQL: {}", query));
+            // TODO: Actually execute SQL via a connection
+            Ok(format!("SQL executed: {}", query))
+        })
+        .build();
+    
+    // Register orchestrations
+    let orchestrations = OrchestrationRegistry::builder()
+        .register("HelloWorld", |ctx: OrchestrationContext, input: String| async move {
+            ctx.trace_info("Starting HelloWorld orchestration");
+            let greeting = ctx.schedule_activity("Greet", input)
+                .into_activity()
+                .await?;
+            ctx.trace_info(format!("Completed with: {}", greeting));
+            Ok(greeting)
+        })
+        .build();
+    
+    // Start the duroxide runtime
+    let _runtime = runtime::Runtime::start_with_store(
+        store.clone(),
+        Arc::new(activities),
+        orchestrations
+    ).await;
+    
+    log!("pg_durable: duroxide runtime started, processing orchestrations...");
+    
+    // Keep running until signaled to stop
+    // The duroxide runtime runs its own dispatcher loops internally
+    loop {
+        // Check for shutdown signal every second
+        tokio::time::sleep(Duration::from_secs(1)).await;
         
-        if BackgroundWorker::sigterm_received() {
-            log!("pg_durable background worker shutting down");
-            break;
-        }
-        
-        // Process pending workflows
-        BackgroundWorker::transaction(|| {
-            process_pending_workflows();
-        });
+        // We can't easily check BackgroundWorker signals from async context,
+        // so we just run indefinitely. PostgreSQL will kill us on shutdown.
     }
     
-    log!("pg_durable background worker terminated");
+    // This won't be reached, but for completeness:
+    // runtime.shutdown(None).await;
 }
 
 /// Process any pending workflow instances
@@ -247,78 +327,94 @@ fn execute_sql_node(node_id: &str, query: &str) -> Result<Option<String>, String
 }
 
 // ============================================================================
-// Duroxide Integration - Hello World Test
+// Duroxide Client Functions
 // ============================================================================
 
-/// Run a simple duroxide hello world orchestration to verify integration works.
-/// This uses an in-memory SQLite store for testing.
-fn run_duroxide_hello_world(name: &str) -> Result<String, String> {
-    // Create a tokio runtime for async execution
+/// Start a duroxide orchestration via the shared SQLite store.
+/// The background worker will pick it up and execute it.
+fn start_duroxide_orchestration(
+    orchestration_name: &str, 
+    instance_id: &str, 
+    input: &str
+) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
     
     rt.block_on(async {
-        // Use in-memory SQLite for this test (simpler than Postgres for now)
+        let db_path = duroxide_connection_string();
         let store = Arc::new(
-            duroxide::providers::sqlite::SqliteProvider::new_in_memory()
+            duroxide::providers::sqlite::SqliteProvider::new(&db_path, None)
                 .await
-                .map_err(|e| format!("Failed to create SQLite provider: {}", e))?
+                .map_err(|e| format!("Failed to connect to duroxide store: {}", e))?
         );
         
-        // Register a simple "Greet" activity
-        let activities = ActivityRegistry::builder()
-            .register("Greet", |_ctx: ActivityContext, input: String| async move {
-                Ok(format!("Hello, {}!", input))
-            })
-            .build();
-        
-        // Define the orchestration
-        let orchestration = |ctx: OrchestrationContext, input: String| async move {
-            ctx.trace_info("Starting hello world orchestration");
-            let greeting = ctx.schedule_activity("Greet", input)
-                .into_activity()
-                .await?;
-            ctx.trace_info(format!("Got greeting: {}", greeting));
-            Ok(greeting)
-        };
-        
-        // Register the orchestration
-        let orchestrations = OrchestrationRegistry::builder()
-            .register("HelloWorld", orchestration)
-            .build();
-        
-        // Start the runtime
-        let runtime = runtime::Runtime::start_with_store(
-            store.clone(),
-            Arc::new(activities),
-            orchestrations
-        ).await;
-        
-        // Create client and start orchestration
-        let client = Client::new(store.clone());
-        let instance_id = format!("hello-{}", Uuid::new_v4());
-        
-        client.start_orchestration(&instance_id, "HelloWorld", name)
+        let client = Client::new(store);
+        client.start_orchestration(instance_id, orchestration_name, input)
             .await
             .map_err(|e| format!("Failed to start orchestration: {:?}", e))?;
         
-        // Wait for completion
-        let result = client.wait_for_orchestration(&instance_id, Duration::from_secs(5))
+        Ok(())
+    })
+}
+
+/// Wait for a duroxide orchestration to complete and return its result.
+fn wait_duroxide_orchestration(instance_id: &str, timeout_secs: u64) -> Result<String, String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
+    
+    rt.block_on(async {
+        let db_path = duroxide_connection_string();
+        let store = Arc::new(
+            duroxide::providers::sqlite::SqliteProvider::new(&db_path, None)
+                .await
+                .map_err(|e| format!("Failed to connect to duroxide store: {}", e))?
+        );
+        
+        let client = Client::new(store);
+        let result = client.wait_for_orchestration(instance_id, Duration::from_secs(timeout_secs))
             .await
             .map_err(|e| format!("Failed to wait for orchestration: {:?}", e))?;
-        
-        // Shutdown runtime
-        runtime.shutdown(None).await;
         
         match result {
             runtime::OrchestrationStatus::Completed { output } => Ok(output),
             runtime::OrchestrationStatus::Failed { details } => {
                 Err(format!("Orchestration failed: {}", details.display_message()))
             }
-            other => Err(format!("Unexpected status: {:?}", other)),
+            runtime::OrchestrationStatus::Running => {
+                Err("Orchestration still running (timeout)".to_string())
+            }
+            runtime::OrchestrationStatus::NotFound => {
+                Err("Orchestration not found".to_string())
+            }
         }
+    })
+}
+
+/// Get the status of a duroxide orchestration.
+fn get_duroxide_status(instance_id: &str) -> Result<String, String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("Failed to create tokio runtime: {}", e))?;
+    
+    rt.block_on(async {
+        let db_path = duroxide_connection_string();
+        let store = Arc::new(
+            duroxide::providers::sqlite::SqliteProvider::new(&db_path, None)
+                .await
+                .map_err(|e| format!("Failed to connect to duroxide store: {}", e))?
+        );
+        
+        let client = Client::new(store);
+        let status = client.get_orchestration_status(instance_id)
+            .await
+            .map_err(|e| format!("Failed to get status: {:?}", e))?;
+        
+        Ok(format!("{:?}", status))
     })
 }
 
@@ -605,25 +701,56 @@ fn result(instance_id: &str) -> Option<String> {
 
 /// A hello world function that runs a duroxide orchestration.
 /// This demonstrates duroxide integration is working.
+/// The orchestration runs in the background worker; this function 
+/// starts it and waits for the result.
 /// 
 /// Example: SELECT durable.hello('World');
 /// Returns: "Hello, World!" (via duroxide orchestration)
 #[pg_extern(schema = "durable")]  
 fn hello(name: &str) -> String {
-    match run_duroxide_hello_world(name) {
+    // Generate a unique instance ID
+    let instance_id = Uuid::new_v4().to_string();
+    
+    // Start the HelloWorld orchestration
+    if let Err(e) = start_duroxide_orchestration("HelloWorld", &instance_id, name) {
+        return format!("Failed to start orchestration: {}", e);
+    }
+    
+    // Wait for the result (up to 30 seconds)
+    match wait_duroxide_orchestration(&instance_id, 30) {
         Ok(result) => result,
-        Err(e) => format!("duroxide error: {}", e),
+        Err(e) => format!("Orchestration error: {}", e),
     }
 }
 
-/// Test function to verify duroxide integration without going through orchestration.
+/// Test function to verify duroxide integration is working.
+/// This starts a HelloWorld orchestration and waits for the result.
 /// 
 /// Example: SELECT durable.duroxide_test();
 #[pg_extern(schema = "durable")]
 fn duroxide_test() -> String {
-    match run_duroxide_hello_world("duroxide") {
+    let instance_id = Uuid::new_v4().to_string();
+    
+    // Start the HelloWorld orchestration
+    if let Err(e) = start_duroxide_orchestration("HelloWorld", &instance_id, "duroxide") {
+        return format!("FAILED to start: {}", e);
+    }
+    
+    // Wait for the result
+    match wait_duroxide_orchestration(&instance_id, 30) {
         Ok(result) => format!("SUCCESS: {}", result),
         Err(e) => format!("FAILED: {}", e),
+    }
+}
+
+/// Check status of a duroxide orchestration by instance ID.
+/// 
+/// Example: SELECT durable.orchestration_status('some-uuid-here');
+#[pg_extern(schema = "durable")]
+fn orchestration_status(instance_id: &str) -> String {
+    match get_duroxide_status(instance_id) {
+        Ok(status) => status,
+        Err(e) => format!("Error: {}", e),
     }
 }
 
