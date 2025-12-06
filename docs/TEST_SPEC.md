@@ -26,7 +26,7 @@ This ensures the background worker is loaded during test execution, enabling ful
 
 ### 1. DSL Node Creation Tests
 
-These tests verify that each DSL function correctly creates workflow nodes with the expected structure.
+These tests verify that each DSL function correctly creates orchestration nodes with the expected structure.
 
 #### `test_sql_creates_valid_durofut`
 
@@ -155,14 +155,14 @@ These tests verify that each DSL function correctly creates workflow nodes with 
 
 ### 2. Instance Management Tests
 
-These tests verify workflow instance lifecycle operations.
+These tests verify orchestration instance lifecycle operations.
 
 #### `test_start_returns_instance_id`
 
 **Purpose**: Verify that `durable.start()` returns a valid 8-character hex instance ID.
 
 **Test Logic**:
-1. Create a SQL workflow
+1. Create a SQL orchestration
 2. Call `start(&fut, None)` with no label
 3. Assert returned ID length is exactly 8 characters
 4. Assert all characters are hexadecimal digits
@@ -178,8 +178,8 @@ These tests verify workflow instance lifecycle operations.
 **Purpose**: Verify that `durable.start()` accepts an optional label parameter.
 
 **Test Logic**:
-1. Create a SQL workflow
-2. Call `start(&fut, Some("my-test-workflow"))`
+1. Create a SQL orchestration
+2. Call `start(&fut, Some("my-test-orchestration"))`
 3. Assert returned ID length is 8 characters
 
 **Validates**:
@@ -193,7 +193,7 @@ These tests verify workflow instance lifecycle operations.
 **Purpose**: Verify that `durable.start()` persists the instance to the database.
 
 **Test Logic**:
-1. Create and start a workflow with label "test-instance-row"
+1. Create and start a orchestration with label "test-instance-row"
 2. Query `durable.instances` table for the returned ID
 3. Assert exactly 1 row exists with that ID
 
@@ -209,7 +209,7 @@ These tests verify workflow instance lifecycle operations.
 **Purpose**: Verify that newly created instances have "pending" status.
 
 **Test Logic**:
-1. Create and start a workflow
+1. Create and start a orchestration
 2. Call `status(&instance_id)`
 3. Assert status equals `Some("pending")`
 
@@ -235,7 +235,7 @@ These tests verify that custom SQL operators work correctly when invoked via SPI
 **Validates**:
 - Operator registration in PostgreSQL
 - Operator binding to `durable.seq` function
-- End-to-end SQL workflow construction
+- End-to-end SQL orchestration construction
 
 ---
 
@@ -264,13 +264,13 @@ These tests verify behavior in boundary conditions and ensure system robustness.
 **Purpose**: Verify that each `start()` call generates a unique instance ID.
 
 **Test Logic**:
-1. Create one SQL workflow
+1. Create one SQL orchestration
 2. Start it three times: `id1`, `id2`, `id3`
 3. Assert `id1 != id2`, `id2 != id3`, `id1 != id3`
 
 **Validates**:
 - UUID uniqueness
-- No ID reuse even for identical workflows
+- No ID reuse even for identical orchestrations
 - Concurrent safety (each call gets unique ID)
 
 ---
@@ -315,7 +315,7 @@ cargo pgrx test pg17 -- --nocapture
 
 ## Test Limitations
 
-1. **No Runtime Execution Tests**: Tests verify node creation and instance management but do not test actual workflow execution (which requires the background worker to process).
+1. **No Runtime Execution Tests**: Tests verify node creation and instance management but do not test actual orchestration execution (which requires the background worker to process).
 
 2. **No Network Tests**: Monitoring functions that query the Duroxide SQLite store are not fully tested because the runtime may not be actively processing during test execution.
 
@@ -325,7 +325,7 @@ cargo pgrx test pg17 -- --nocapture
 
 Recommended tests to add:
 
-- **Workflow Execution**: Mock or wait for background worker to complete simple workflows
+- **Workflow Execution**: Mock or wait for background worker to complete simple orchestrations
 - **Variable Substitution**: Test `$name` replacement in SQL queries
 - **Error Handling**: Test invalid cron expressions, malformed JSON, etc.
 - **Monitoring Functions**: Test `list_instances()`, `metrics()`, `instance_info()` with pre-populated data

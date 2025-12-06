@@ -1,4 +1,4 @@
-comment = 'pg_durable: SQL-native durable workflows for PostgreSQL'
+comment = 'pg_durable: SQL-native durable orchestrations for PostgreSQL'
 default_version = '@CARGO_VERSION@'
 module_pathname = 'pg_durable'
 relocatable = false

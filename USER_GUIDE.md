@@ -1,8 +1,8 @@
 # pg_durable User Guide
 
-**Durable Workflows for PostgreSQL**
+**Durable Orchestrations for PostgreSQL**
 
-pg_durable is a PostgreSQL extension that brings durable, fault-tolerant workflow execution directly into your database. Define workflows using a SQL-native DSL, and let the extension handle persistence, retries, and scheduling.
+pg_durable is a PostgreSQL extension that brings durable, fault-tolerant orchestration execution directly into your database. Define orchestrations using a SQL-native DSL, and let the extension handle persistence, retries, and scheduling.
 
 ---
 
@@ -13,7 +13,7 @@ pg_durable is a PostgreSQL extension that brings durable, fault-tolerant workflo
 3. [Test Data Setup](#test-data-setup)
 4. [Core Concepts](#core-concepts)
 5. [DSL Reference](#dsl-reference)
-6. [Workflow Examples](#workflow-examples)
+6. [Orchestration Examples](#orchestration-examples)
 7. [Loops & Cron Jobs](#loops--cron-jobs)
 8. [Monitoring Functions](#monitoring-functions)
 9. [Troubleshooting](#troubleshooting)
@@ -24,19 +24,19 @@ pg_durable is a PostgreSQL extension that brings durable, fault-tolerant workflo
 
 ### What is pg_durable?
 
-pg_durable enables you to define and execute **durable workflows** entirely within PostgreSQL. Unlike traditional job queues or external workflow engines, pg_durable:
+pg_durable enables you to define and execute **durable orchestrations** entirely within PostgreSQL. Unlike traditional job queues or external orchestration engines, pg_durable:
 
 - **Lives in your database** - No external services to manage
-- **Uses SQL syntax** - Define workflows with familiar SQL functions and operators
-- **Is fault-tolerant** - Workflows survive crashes and restarts
+- **Uses SQL syntax** - Define orchestrations with familiar SQL functions and operators
+- **Is fault-tolerant** - Orchestrations survive crashes and restarts
 - **Supports scheduling** - Built-in cron-style scheduling for recurring jobs
-- **Provides visibility** - Monitor workflow status directly via SQL queries
+- **Provides visibility** - Monitor orchestration status directly via SQL queries
 
 ### Key Features
 
 | Feature | Description |
 |---------|-------------|
-| **SQL DSL** | Define workflows using `durable.sql()`, `~>`, `\|=>` operators |
+| **SQL DSL** | Define orchestrations using `durable.sql()`, `~>`, `\|=>` operators |
 | **Sequential Execution** | Chain steps with `~>` operator |
 | **Parallel Execution** | Run steps concurrently with `durable.join()` |
 | **Conditional Logic** | Branch with `durable.if()` |
@@ -44,8 +44,8 @@ pg_durable enables you to define and execute **durable workflows** entirely with
 | **Cron Scheduling** | Schedule with `durable.wait_for_schedule()` |
 | **Eternal Loops** | Create forever-running jobs with `durable.loop()` |
 | **Variable Substitution** | Pass results between steps using `$name` |
-| **Labels** | Tag workflows with friendly names |
-| **Monitoring** | Query workflow status, history, and metrics |
+| **Labels** | Tag orchestrations with friendly names |
+| **Monitoring** | Query orchestration status, history, and metrics |
 
 ---
 
@@ -57,10 +57,10 @@ pg_durable enables you to define and execute **durable workflows** entirely with
 CREATE EXTENSION pg_durable;
 ```
 
-### Your First Workflow
+### Your First Orchestration
 
 ```sql
--- Execute a simple SQL query as a durable workflow
+-- Execute a simple SQL query as a durable orchestration
 SELECT durable.start(
     durable.sql('SELECT ''Hello, durable world!''')
 );
@@ -70,7 +70,7 @@ SELECT durable.start(
 ### Check the Result
 
 ```sql
--- List all workflows
+-- List all orchestrations
 SELECT * FROM durable.list_instances();
 
 -- Get result of a specific instance
@@ -86,7 +86,7 @@ Copy and paste this script into `psql` to create test schemas and sample data fo
 ```sql
 -- ============================================================================
 -- pg_durable Test Data Setup
--- Run this script to create sample schemas and data for testing workflows
+-- Run this script to create sample schemas and data for testing orchestrations
 -- ============================================================================
 
 -- Create a playground schema for testing
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS playground.task_queue (
     completed_at TIMESTAMP
 );
 
--- Logs table for workflow output
+-- Logs table for orchestration output
 CREATE TABLE IF NOT EXISTS playground.logs (
     id SERIAL PRIMARY KEY,
     msg TEXT NOT NULL,
@@ -223,13 +223,13 @@ SELECT 'Orders: ' || COUNT(*) FROM playground.orders;
 SELECT 'Tasks: ' || COUNT(*) FROM playground.task_queue;
 ```
 
-After running this script, you can test workflows against the `playground` schema.
+After running this script, you can test orchestrations against the `playground` schema.
 
 ---
 
 ## Core Concepts
 
-### Workflow Lifecycle
+### Orchestration Lifecycle
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
@@ -247,14 +247,14 @@ After running this script, you can test workflows against the `playground` schem
 
 ### Instance IDs
 
-Every workflow gets a unique 8-character hex ID (e.g., `a1b2c3d4`). Use this ID to:
+Every orchestration gets a unique 8-character hex ID (e.g., `a1b2c3d4`). Use this ID to:
 - Check status: `SELECT durable.status('a1b2c3d4')`
 - Get result: `SELECT durable.result('a1b2c3d4')`
 - Cancel: `SELECT durable.cancel('a1b2c3d4')`
 
 ### Durability
 
-Workflows are persisted to disk. If PostgreSQL crashes:
+Orchestrations are persisted to disk. If PostgreSQL crashes:
 - Completed steps are not re-executed
 - In-progress steps resume from the last checkpoint
 - Pending steps execute when the server restarts
@@ -274,10 +274,10 @@ Workflows are persisted to disk. If PostgreSQL crashes:
 | `durable.join3(a, b, c)` | Execute three in parallel | `durable.join3(a, b, c)` |
 | `durable.if(cond, then, else)` | Conditional branching | `durable.if(cond, then_branch, else_branch)` |
 | `durable.loop(body)` | Repeat forever (eternal) | `durable.loop(body)` |
-| `durable.start(workflow, label)` | Start a workflow | `durable.start(wf, 'my-job')` |
-| `durable.cancel(id, reason)` | Cancel a workflow | `durable.cancel('a1b2c3d4', 'Done')` |
-| `durable.status(id)` | Get workflow status | `durable.status('a1b2c3d4')` |
-| `durable.result(id)` | Get workflow result | `durable.result('a1b2c3d4')` |
+| `durable.start(orchestration, label)` | Start a orchestration | `durable.start(wf, 'my-job')` |
+| `durable.cancel(id, reason)` | Cancel a orchestration | `durable.cancel('a1b2c3d4', 'Done')` |
+| `durable.status(id)` | Get orchestration status | `durable.status('a1b2c3d4')` |
+| `durable.result(id)` | Get orchestration result | `durable.result('a1b2c3d4')` |
 
 ### Operators
 
@@ -320,7 +320,7 @@ SELECT durable.start(
 
 ---
 
-## Workflow Examples
+## Orchestration Examples
 
 ### 1. Simple Query
 
@@ -338,7 +338,7 @@ SELECT durable.start(
     durable.sql('INSERT INTO playground.logs (msg) VALUES (''Step 1: Starting'')') ~>
     durable.sql('INSERT INTO playground.logs (msg) VALUES (''Step 2: Processing'')') ~>
     durable.sql('INSERT INTO playground.logs (msg) VALUES (''Step 3: Complete'')'),
-    'three-step-workflow'
+    'three-step-orchestration'
 );
 ```
 
@@ -425,7 +425,7 @@ SELECT durable.start(
 
 ### Eternal Loops
 
-Use `durable.loop()` to create workflows that run forever. Each iteration creates a new execution with fresh state (via continue-as-new).
+Use `durable.loop()` to create orchestrations that run forever. Each iteration creates a new execution with fresh state (via continue-as-new).
 
 ```sql
 -- Simple heartbeat every 30 seconds
@@ -538,7 +538,7 @@ SELECT * FROM durable.instance_info('a1b2c3d4');
 
 ### Execution History
 
-For loops and retried workflows, see the execution history:
+For loops and retried orchestrations, see the execution history:
 
 ```sql
 -- Last 5 executions (default)
@@ -550,9 +550,9 @@ SELECT * FROM durable.instance_executions('a1b2c3d4', 20);
 
 **Columns:** `execution_id`, `status`, `event_count`, `duration_ms`, `output`
 
-### Workflow Nodes
+### Orchestration Nodes
 
-See the workflow graph structure:
+See the orchestration graph structure:
 
 ```sql
 -- Last 5 executions (default)
@@ -604,7 +604,7 @@ LOG:  pg_durable: duroxide background worker starting...
 LOG:  pg_durable: duroxide runtime started, processing orchestrations...
 ```
 
-### Workflow Stuck in "Running"
+### Orchestration Stuck in "Running"
 
 ```sql
 -- Check execution history
@@ -617,10 +617,10 @@ SELECT * FROM durable.instance_info('instance_id');
 SELECT durable.cancel('instance_id', 'Manual intervention');
 ```
 
-### View Running Workflows
+### View Running Orchestrations
 
 ```sql
--- See all running workflows with labels
+-- See all running orchestrations with labels
 SELECT instance_id, label, status 
 FROM durable.list_instances('Running');
 ```
@@ -636,7 +636,7 @@ SELECT durable.debug_db_path();
 ## Quick Reference Card
 
 ```sql
--- Start a workflow
+-- Start a orchestration
 SELECT durable.start(durable.sql('...'), 'optional-label');
 
 -- Chain steps

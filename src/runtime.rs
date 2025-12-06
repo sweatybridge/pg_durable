@@ -14,7 +14,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{Column, Row};
 
 use crate::types::{
-    WorkflowGraph, WorkflowNode, OrchestrationInput,
+    OrchestrationGraph, OrchestrationNode, OrchestrationInput,
     duroxide_db_path, duroxide_connection_string, postgres_connection_string,
     calculate_cron_wait, evaluate_condition, substitute_variables,
 };
@@ -108,6 +108,7 @@ async fn run_duroxide_runtime_with_shutdown() {
     let sql_pool = pg_pool.clone();
     let graph_pool = pg_pool.clone();
     let status_pool = pg_pool.clone();
+    let node_status_pool = pg_pool.clone();
     
     // Register activities
     let activities = ActivityRegistry::builder()
@@ -160,10 +161,10 @@ async fn run_duroxide_runtime_with_shutdown() {
                 }
             }
         })
-        .register("LoadWorkflowGraph", move |ctx: ActivityContext, instance_id: String| {
+        .register("LoadOrchestrationGraph", move |ctx: ActivityContext, instance_id: String| {
             let pool = graph_pool.clone();
             async move {
-                ctx.trace_info(format!("Loading workflow graph for instance: {}", instance_id));
+                ctx.trace_info(format!("Loading orchestration graph for instance: {}", instance_id));
                 
                 let instance_query = format!(
                     "SELECT root_node::text FROM durable.instances WHERE id = '{}'",
@@ -190,13 +191,13 @@ async fn run_duroxide_runtime_with_shutdown() {
                     .await
                 {
                     Ok(rows) => rows,
-                    Err(e) => return Err(format!("Failed to load workflow nodes: {}", e)),
+                    Err(e) => return Err(format!("Failed to load orchestration nodes: {}", e)),
                 };
                 
                 let mut nodes = std::collections::HashMap::new();
                 for row in rows {
                     let id: String = row.get("id");
-                    let node = WorkflowNode {
+                    let node = OrchestrationNode {
                         id: id.clone(),
                         node_type: row.get("node_type"),
                         query: row.get("query"),
@@ -207,13 +208,13 @@ async fn run_duroxide_runtime_with_shutdown() {
                     nodes.insert(id, node);
                 }
                 
-                let graph = WorkflowGraph {
+                let graph = OrchestrationGraph {
                     instance_id,
                     root_node_id,
                     nodes,
                 };
                 
-                ctx.trace_info(format!("Loaded workflow graph with {} nodes", graph.nodes.len()));
+                ctx.trace_info(format!("Loaded orchestration graph with {} nodes", graph.nodes.len()));
                 
                 serde_json::to_string(&graph)
                     .map_err(|e| format!("Failed to serialize graph: {}", e))
@@ -255,6 +256,40 @@ async fn run_duroxide_runtime_with_shutdown() {
                 }
             }
         })
+        .register("UpdateNodeStatus", move |ctx: ActivityContext, input_json: String| {
+            let pool = node_status_pool.clone();
+            async move {
+                let input: serde_json::Value = serde_json::from_str(&input_json)
+                    .map_err(|e| format!("Failed to parse node status input: {}", e))?;
+                
+                let node_id = input["node_id"].as_str().ok_or("Missing node_id")?;
+                let status = input["status"].as_str().ok_or("Missing status")?;
+                let result = input.get("result").and_then(|r| r.as_str());
+                
+                let update_query = if let Some(res) = result {
+                    // Escape single quotes in result for SQL
+                    let escaped_result = res.replace('\'', "''");
+                    format!(
+                        "UPDATE durable.nodes SET status = '{}', result = '{}', updated_at = now() WHERE id = '{}'",
+                        status, escaped_result, node_id
+                    )
+                } else {
+                    format!(
+                        "UPDATE durable.nodes SET status = '{}', updated_at = now() WHERE id = '{}'",
+                        status, node_id
+                    )
+                };
+                
+                match sqlx::query(&update_query).execute(pool.as_ref()).await {
+                    Ok(_) => Ok("Node status updated".to_string()),
+                    Err(e) => {
+                        let err_msg = format!("Failed to update node status: {}", e);
+                        ctx.trace_info(&err_msg);
+                        Err(err_msg)
+                    }
+                }
+            }
+        })
         .build();
     
     // Register orchestrations
@@ -272,23 +307,23 @@ async fn run_duroxide_runtime_with_shutdown() {
             let label_info = label.as_ref().map(|l| format!(" ({})", l)).unwrap_or_default();
             ctx.trace_info(format!("Starting ExecuteWorkflow for instance: {}{}", instance_id, label_info));
             
-            let graph_json = ctx.schedule_activity("LoadWorkflowGraph", instance_id.clone())
+            let graph_json = ctx.schedule_activity("LoadOrchestrationGraph", instance_id.clone())
                 .into_activity()
                 .await?;
             
-            let graph: WorkflowGraph = serde_json::from_str(&graph_json)
-                .map_err(|e| format!("Failed to parse workflow graph: {}", e))?;
+            let graph: OrchestrationGraph = serde_json::from_str(&graph_json)
+                .map_err(|e| format!("Failed to parse orchestration graph: {}", e))?;
             
-            ctx.trace_info(format!("Executing workflow with {} nodes, root: {}", 
+            ctx.trace_info(format!("Executing orchestration with {} nodes, root: {}", 
                 graph.nodes.len(), graph.root_node_id));
             
             let mut results: std::collections::HashMap<String, String> = std::collections::HashMap::new();
             
-            let workflow_result = execute_workflow_node(&ctx, &graph, &graph.root_node_id, &mut results).await;
+            let orchestration_result = execute_orchestration_node(&ctx, &graph, &graph.root_node_id, &mut results).await;
             
-            match &workflow_result {
+            match &orchestration_result {
                 Ok(result) => {
-                    ctx.trace_info(format!("Workflow completed with result: {}", result));
+                    ctx.trace_info(format!("Orchestration completed with result: {}", result));
                     let status_input = serde_json::json!({
                         "instance_id": instance_id,
                         "status": "completed"
@@ -298,7 +333,7 @@ async fn run_duroxide_runtime_with_shutdown() {
                         .await;
                 }
                 Err(err) => {
-                    ctx.trace_info(format!("Workflow failed with error: {}", err));
+                    ctx.trace_info(format!("Orchestration failed with error: {}", err));
                     let status_input = serde_json::json!({
                         "instance_id": instance_id,
                         "status": "failed"
@@ -309,7 +344,7 @@ async fn run_duroxide_runtime_with_shutdown() {
                 }
             }
             
-            workflow_result
+            orchestration_result
         })
         .register("ExecuteSubtree", |ctx: OrchestrationContext, input_json: String| async move {
             let input: serde_json::Value = serde_json::from_str(&input_json)
@@ -319,14 +354,14 @@ async fn run_duroxide_runtime_with_shutdown() {
             let node_id = input["node_id"].as_str().ok_or("Missing node_id in ExecuteSubtree input")?;
             let results_json = input["results"].as_str().ok_or("Missing results in ExecuteSubtree input")?;
             
-            let graph: WorkflowGraph = serde_json::from_str(graph_json)
+            let graph: OrchestrationGraph = serde_json::from_str(graph_json)
                 .map_err(|e| format!("Failed to parse graph in ExecuteSubtree: {}", e))?;
             let mut results: std::collections::HashMap<String, String> = serde_json::from_str(results_json)
                 .map_err(|e| format!("Failed to parse results in ExecuteSubtree: {}", e))?;
             
             ctx.trace_info(format!("ExecuteSubtree: executing node {}", node_id));
             
-            let result = execute_workflow_node(&ctx, &graph, node_id, &mut results).await?;
+            let result = execute_orchestration_node(&ctx, &graph, node_id, &mut results).await?;
             
             ctx.trace_info(format!("ExecuteSubtree: node {} completed", node_id));
             Ok(result)
@@ -363,10 +398,10 @@ async fn run_duroxide_runtime_with_shutdown() {
 // Node Execution
 // ============================================================================
 
-/// Recursively execute workflow nodes
-async fn execute_workflow_node(
+/// Recursively execute orchestration nodes
+async fn execute_orchestration_node(
     ctx: &OrchestrationContext,
-    graph: &WorkflowGraph,
+    graph: &OrchestrationGraph,
     node_id: &str,
     results: &mut std::collections::HashMap<String, String>,
 ) -> Result<String, String> {
@@ -375,6 +410,52 @@ async fn execute_workflow_node(
     
     ctx.trace_info(format!("Executing node {} (type: {})", node_id, node.node_type));
     
+    // Mark node as running
+    let running_input = serde_json::json!({
+        "node_id": node_id,
+        "status": "running"
+    });
+    let _ = ctx.schedule_activity("UpdateNodeStatus", running_input.to_string())
+        .into_activity()
+        .await;
+    
+    let execute_result = execute_node_inner(ctx, graph, node_id, node, results).await;
+    
+    // Update node with final status and result
+    match &execute_result {
+        Ok(result) => {
+            let completed_input = serde_json::json!({
+                "node_id": node_id,
+                "status": "completed",
+                "result": result
+            });
+            let _ = ctx.schedule_activity("UpdateNodeStatus", completed_input.to_string())
+                .into_activity()
+                .await;
+        }
+        Err(err) => {
+            let failed_input = serde_json::json!({
+                "node_id": node_id,
+                "status": "failed",
+                "result": err
+            });
+            let _ = ctx.schedule_activity("UpdateNodeStatus", failed_input.to_string())
+                .into_activity()
+                .await;
+        }
+    }
+    
+    execute_result
+}
+
+/// Inner function that actually executes the node logic
+async fn execute_node_inner(
+    ctx: &OrchestrationContext,
+    graph: &OrchestrationGraph,
+    node_id: &str,
+    node: &OrchestrationNode,
+    results: &mut std::collections::HashMap<String, String>,
+) -> Result<String, String> {
     match node.node_type.to_lowercase().as_str() {
         "sql" => {
             let query = node.query.as_ref()
@@ -400,8 +481,8 @@ async fn execute_workflow_node(
             let right_id = node.right_node.as_ref()
                 .ok_or_else(|| format!("THEN node {} has no right_node", node_id))?;
             
-            let _left_result = Box::pin(execute_workflow_node(ctx, graph, left_id, results)).await?;
-            let right_result = Box::pin(execute_workflow_node(ctx, graph, right_id, results)).await?;
+            let _left_result = Box::pin(execute_orchestration_node(ctx, graph, left_id, results)).await?;
+            let right_result = Box::pin(execute_orchestration_node(ctx, graph, right_id, results)).await?;
             
             Ok(right_result)
         }
@@ -433,7 +514,7 @@ async fn execute_workflow_node(
                 .ok_or_else(|| format!("LOOP node {} has no body", node_id))?;
             
             ctx.trace_info("Executing loop iteration");
-            let body_result = Box::pin(execute_workflow_node(ctx, graph, body_id, results)).await?;
+            let body_result = Box::pin(execute_orchestration_node(ctx, graph, body_id, results)).await?;
             
             ctx.trace_info("Continuing as new for next loop iteration");
             ctx.continue_as_new(graph.instance_id.clone());
@@ -455,15 +536,15 @@ async fn execute_workflow_node(
                 .ok_or_else(|| format!("IF node {} has no else branch", node_id))?;
             
             ctx.trace_info("Evaluating IF condition");
-            let condition_result = Box::pin(execute_workflow_node(ctx, graph, condition_node_id, results)).await?;
+            let condition_result = Box::pin(execute_orchestration_node(ctx, graph, condition_node_id, results)).await?;
             
             let is_true = evaluate_condition(&condition_result)?;
             ctx.trace_info(format!("Condition evaluated to: {}", is_true));
             
             if is_true {
-                Box::pin(execute_workflow_node(ctx, graph, then_id, results)).await
+                Box::pin(execute_orchestration_node(ctx, graph, then_id, results)).await
             } else {
-                Box::pin(execute_workflow_node(ctx, graph, else_id, results)).await
+                Box::pin(execute_orchestration_node(ctx, graph, else_id, results)).await
             }
         }
         "join" => {

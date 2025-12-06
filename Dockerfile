@@ -35,6 +35,7 @@ WORKDIR /app
 # Copy Cargo files first for better caching
 COPY Cargo.toml Cargo.lock* ./
 COPY .cargo .cargo
+COPY build.rs ./
 
 # Copy source code
 COPY src ./src

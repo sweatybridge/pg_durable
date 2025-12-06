@@ -19,17 +19,26 @@ pub fn short_id() -> String {
 }
 
 /// Path to the shared SQLite database for duroxide.
+/// Priority: 1) Explicit env var, 2) PGDATA env, 3) PostgreSQL data_directory (via SPI), 4) pgrx dev paths
 pub fn duroxide_db_path() -> String {
+    // 1. Explicit configuration takes precedence
     if let Ok(path) = std::env::var("PG_DURABLE_STORE_PATH") {
         return path;
     }
     
+    // 2. PGDATA environment variable (background worker context sets this)
     if let Ok(pgdata) = std::env::var("PGDATA") {
         return format!("{}/pg_durable_duroxide.db", pgdata);
     }
     
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    // 3. Try to get data_directory from PostgreSQL via SPI
+    // This is safe to call within a transaction context
+    if let Ok(Some(data_dir)) = Spi::get_one::<String>("SELECT current_setting('data_directory')") {
+        return format!("{}/pg_durable_duroxide.db", data_dir);
+    }
     
+    // 4. pgrx development paths fallback  
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     for version in &["17", "16", "15", "14", "13"] {
         let pgrx_data = format!("{}/.pgrx/data-{}", home, version);
         if std::path::Path::new(&pgrx_data).exists() {
@@ -37,10 +46,7 @@ pub fn duroxide_db_path() -> String {
         }
     }
     
-    if let Ok(Some(data_dir)) = Spi::get_one::<String>("SELECT current_setting('data_directory')") {
-        return format!("{}/pg_durable_duroxide.db", data_dir);
-    }
-    
+    // 5. Final fallback
     format!("{}/pg_durable_duroxide.db", home)
 }
 
@@ -169,12 +175,12 @@ pub fn substitute_variables(query: &str, results: &std::collections::HashMap<Str
 }
 
 // ============================================================================
-// Workflow Graph Types
+// Orchestration Graph Types
 // ============================================================================
 
-/// Represents a node in the workflow graph
+/// Represents a node in the orchestration graph
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowNode {
+pub struct OrchestrationNode {
     pub id: String,
     pub node_type: String,
     pub query: Option<String>,
@@ -183,12 +189,12 @@ pub struct WorkflowNode {
     pub right_node: Option<String>,
 }
 
-/// Represents the entire workflow graph for an instance
+/// Represents the entire orchestration graph for an instance
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkflowGraph {
+pub struct OrchestrationGraph {
     pub instance_id: String,
     pub root_node_id: String,
-    pub nodes: std::collections::HashMap<String, WorkflowNode>,
+    pub nodes: std::collections::HashMap<String, OrchestrationNode>,
 }
 
 /// Input structure passed to duroxide orchestrations
@@ -200,10 +206,10 @@ pub struct OrchestrationInput {
 }
 
 // ============================================================================
-// Durofut Type - Represents a workflow node reference
+// Durofut Type - Represents an orchestration node reference
 // ============================================================================
 
-/// The Durofut type represents a "durable future" - a reference to a node in the workflow graph.
+/// The Durofut type represents a "durable future" - a reference to a node in the orchestration graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Durofut {
     pub node_id: String,

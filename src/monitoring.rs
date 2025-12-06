@@ -234,7 +234,7 @@ pub fn metrics() -> TableIterator<'static, (
     TableIterator::new(results)
 }
 
-/// Get workflow nodes for an instance with execution history.
+/// Get orchestration nodes for an instance with execution history.
 #[pg_extern(schema = "durable")]
 pub fn instance_nodes(
     instance_id_param: &str,
@@ -249,15 +249,18 @@ pub fn instance_nodes(
     name!(right_node, Option<String>),
     name!(status, Option<String>),
     name!(result, Option<String>),
+    name!(updated_at, Option<pgrx::datum::TimestampWithTimeZone>),
 )> {
+    use pgrx::datum::TimestampWithTimeZone;
+    
     let instance_id = instance_id_param.to_string();
     let db_path = duroxide_db_path();
     
-    // Get node definitions from PostgreSQL
-    let node_defs: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>)> = 
+    // Get node definitions from PostgreSQL (including status, result and updated_at)
+    let node_defs: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<TimestampWithTimeZone>)> = 
         Spi::connect(|client| {
             let sql = format!(
-                r#"SELECT id::text, node_type, query, result_name, left_node::text, right_node::text
+                r#"SELECT id::text, node_type, query, result_name, left_node::text, right_node::text, status, result::text, updated_at
                    FROM durable.nodes WHERE instance_id = '{}'"#,
                 instance_id
             );
@@ -270,7 +273,10 @@ pub fn instance_nodes(
                         let result_name: Option<String> = row.get(4).ok().flatten();
                         let left_node: Option<String> = row.get(5).ok().flatten();
                         let right_node: Option<String> = row.get(6).ok().flatten();
-                        nodes.push((id, node_type, query, result_name, left_node, right_node));
+                        let node_status: Option<String> = row.get(7).ok().flatten();
+                        let node_result: Option<String> = row.get(8).ok().flatten();
+                        let updated_at: Option<TimestampWithTimeZone> = row.get(9).ok().flatten();
+                        nodes.push((id, node_type, query, result_name, left_node, right_node, node_status, node_result, updated_at));
                     }
                 }
             }
@@ -304,22 +310,7 @@ pub fn instance_nodes(
         let mut rows = Vec::new();
         
         for exec_id in limited {
-            let exec_status = client.get_execution_info(&instance_id, exec_id).await
-                .map(|info| info.status)
-                .unwrap_or_else(|_| "unknown".to_string());
-            
-            let exec_output = client.get_execution_info(&instance_id, exec_id).await
-                .ok()
-                .and_then(|info| info.output);
-            
-            for (node_id, node_type, query, result_name, left_node, right_node) in &node_defs {
-                let node_status = match exec_status.as_str() {
-                    "Completed" | "ContinuedAsNew" => Some("completed".to_string()),
-                    "Running" => Some("running".to_string()),
-                    "Failed" | "Canceled" => Some("failed".to_string()),
-                    _ => Some("pending".to_string()),
-                };
-                
+            for (node_id, node_type, query, result_name, left_node, right_node, node_status, node_result, updated_at) in &node_defs {
                 rows.push((
                     exec_id as i64,
                     node_id.clone(),
@@ -328,15 +319,16 @@ pub fn instance_nodes(
                     result_name.clone(),
                     left_node.clone(),
                     right_node.clone(),
-                    node_status,
-                    exec_output.clone(),
+                    node_status.clone(),
+                    node_result.clone(),
+                    *updated_at,
                 ));
             }
         }
         
         // If no executions found, return static node definitions
         if rows.is_empty() {
-            for (node_id, node_type, query, result_name, left_node, right_node) in node_defs {
+            for (node_id, node_type, query, result_name, left_node, right_node, node_status, node_result, updated_at) in node_defs {
                 rows.push((
                     0i64,
                     node_id,
@@ -345,8 +337,9 @@ pub fn instance_nodes(
                     result_name,
                     left_node,
                     right_node,
-                    Some("pending".to_string()),
-                    None,
+                    node_status,
+                    node_result,
+                    updated_at,
                 ));
             }
         }

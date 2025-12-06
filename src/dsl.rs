@@ -1,4 +1,4 @@
-//! DSL functions for defining durable workflows
+//! DSL functions for defining durable orchestrations
 
 use pgrx::prelude::*;
 use uuid::Uuid;
@@ -9,8 +9,18 @@ use crate::types::{Durofut, OrchestrationInput, short_id, duroxide_db_path};
 use crate::runtime::start_duroxide_orchestration;
 
 // ============================================================================
-// Debug Function
+// Version & Debug Functions
 // ============================================================================
+
+/// Returns the pg_durable version (semver + build timestamp)
+#[pg_extern(schema = "durable")]
+pub fn version() -> String {
+    format!(
+        "{} (built {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("BUILD_TIMESTAMP")
+    )
+}
 
 /// Debug function to see what duroxide path is being used
 #[pg_extern(schema = "durable")]
@@ -22,7 +32,7 @@ pub fn debug_db_path() -> String {
 // Node Creation Functions
 // ============================================================================
 
-/// Creates a SQL node in the workflow graph.
+/// Creates a SQL node in the orchestration graph.
 #[pg_extern(schema = "durable")]
 pub fn sql(query: &str) -> String {
     let durofut = Durofut {
@@ -193,10 +203,10 @@ pub fn join3(a: &str, b: &str, c: &str) -> String {
 }
 
 // ============================================================================
-// Workflow Control Functions
+// Orchestration Control Functions
 // ============================================================================
 
-/// Starts a durable workflow.
+/// Starts a durable orchestration.
 #[pg_extern(schema = "durable")]
 pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
     let durofut = Durofut::from_json(fut);
@@ -217,7 +227,7 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
         pgrx::error!("Failed to create instance: {:?}", e);
     }
     
-    // Link all nodes in the workflow tree to this instance
+    // Link all nodes in the orchestration tree to this instance
     fn link_nodes(node_id: &str, instance_id: &str, visited: &mut std::collections::HashSet<String>) {
         if visited.contains(node_id) {
             return;
@@ -282,7 +292,7 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
     instance_id
 }
 
-/// Cancels a running workflow.
+/// Cancels a running orchestration.
 #[pg_extern(schema = "durable")]
 pub fn cancel(instance_id: &str, reason: default!(&str, "'Cancelled by user'")) -> String {
     use crate::runtime::cancel_duroxide_orchestration;
@@ -300,7 +310,7 @@ pub fn cancel(instance_id: &str, reason: default!(&str, "'Cancelled by user'")) 
     format!("Instance {} cancelled: {}", instance_id, reason)
 }
 
-/// Gets the status of a workflow instance.
+/// Gets the status of an orchestration instance.
 #[pg_extern(schema = "durable")]
 pub fn status(instance_id: &str) -> Option<String> {
     let sql = format!(
@@ -310,7 +320,7 @@ pub fn status(instance_id: &str) -> Option<String> {
     Spi::get_one::<String>(&sql).ok().flatten()
 }
 
-/// Manually runs pending workflows.
+/// Manually runs pending orchestrations.
 #[pg_extern(schema = "durable")]
 pub fn run(instance_id: default!(Option<&str>, "NULL")) -> String {
     if let Some(id) = instance_id {
@@ -320,7 +330,7 @@ pub fn run(instance_id: default!(Option<&str>, "NULL")) -> String {
     }
 }
 
-/// Gets the result of a completed workflow.
+/// Gets the result of a completed orchestration.
 #[pg_extern(schema = "durable")]
 pub fn result(instance_id: &str) -> Option<String> {
     let sql = format!(
