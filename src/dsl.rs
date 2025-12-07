@@ -48,10 +48,11 @@ pub fn sql(query: &str) -> String {
 
 /// Creates a sequence node that executes two nodes in order.
 /// The SQL operator ~> is syntactic sugar for this function.
+/// Arguments can be either Durofut JSON or plain SQL strings (auto-wrapped).
 #[pg_extern(name = "seq", schema = "durable")]
 pub fn then_fn(a: &str, b: &str) -> String {
-    let a_fut = Durofut::from_json(a);
-    let b_fut = Durofut::from_json(b);
+    let a_fut = Durofut::ensure(a);
+    let b_fut = Durofut::ensure(b);
     
     let durofut = Durofut {
         node_id: short_id(),
@@ -67,9 +68,10 @@ pub fn then_fn(a: &str, b: &str) -> String {
 
 /// Names a result for later reference.
 /// The SQL operator |=> is syntactic sugar for this function.
+/// The fut argument can be either Durofut JSON or plain SQL string (auto-wrapped).
 #[pg_extern(name = "as", schema = "durable")]
 pub fn as_named(name: &str, fut: &str) -> String {
-    let mut durofut = Durofut::from_json(fut);
+    let mut durofut = Durofut::ensure(fut);
     durofut.result_name = Some(name.to_string());
     
     let update_sql = format!(
@@ -121,9 +123,10 @@ pub fn wait_for_schedule(cron_expr: &str) -> String {
 }
 
 /// Creates a loop node that repeats the body indefinitely.
+/// The body argument can be either Durofut JSON or plain SQL string (auto-wrapped).
 #[pg_extern(name = "loop", schema = "durable")]
 pub fn loop_fn(body: &str) -> String {
-    let body_fut = Durofut::from_json(body);
+    let body_fut = Durofut::ensure(body);
     
     let durofut = Durofut {
         node_id: short_id(),
@@ -138,11 +141,12 @@ pub fn loop_fn(body: &str) -> String {
 }
 
 /// Creates a conditional branch node.
+/// All arguments can be either Durofut JSON or plain SQL strings (auto-wrapped).
 #[pg_extern(name = "if", schema = "durable")]
 pub fn if_fn(condition: &str, then_branch: &str, else_branch: &str) -> String {
-    let condition_fut = Durofut::from_json(condition);
-    let then_fut = Durofut::from_json(then_branch);
-    let else_fut = Durofut::from_json(else_branch);
+    let condition_fut = Durofut::ensure(condition);
+    let then_fut = Durofut::ensure(then_branch);
+    let else_fut = Durofut::ensure(else_branch);
     
     let config = serde_json::json!({
         "condition_node": condition_fut.node_id
@@ -161,10 +165,11 @@ pub fn if_fn(condition: &str, then_branch: &str, else_branch: &str) -> String {
 }
 
 /// Creates a parallel join node for 2 branches.
+/// Arguments can be either Durofut JSON or plain SQL strings (auto-wrapped).
 #[pg_extern(schema = "durable")]
 pub fn join(a: &str, b: &str) -> String {
-    let a_fut = Durofut::from_json(a);
-    let b_fut = Durofut::from_json(b);
+    let a_fut = Durofut::ensure(a);
+    let b_fut = Durofut::ensure(b);
     
     let durofut = Durofut {
         node_id: short_id(),
@@ -179,11 +184,12 @@ pub fn join(a: &str, b: &str) -> String {
 }
 
 /// Creates a parallel join node for 3 branches.
+/// Arguments can be either Durofut JSON or plain SQL strings (auto-wrapped).
 #[pg_extern(name = "join3", schema = "durable")]
 pub fn join3(a: &str, b: &str, c: &str) -> String {
-    let a_fut = Durofut::from_json(a);
-    let b_fut = Durofut::from_json(b);
-    let c_fut = Durofut::from_json(c);
+    let a_fut = Durofut::ensure(a);
+    let b_fut = Durofut::ensure(b);
+    let c_fut = Durofut::ensure(c);
     
     let config = serde_json::json!({
         "extra_nodes": [c_fut.node_id]
@@ -206,9 +212,10 @@ pub fn join3(a: &str, b: &str, c: &str) -> String {
 // ============================================================================
 
 /// Starts a durable orchestration.
+/// The fut argument can be either Durofut JSON or plain SQL string (auto-wrapped).
 #[pg_extern(schema = "durable")]
 pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
-    let durofut = Durofut::from_json(fut);
+    let durofut = Durofut::ensure(fut);
     let instance_id = short_id();
     
     let label_sql = label

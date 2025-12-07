@@ -491,6 +491,111 @@ mod tests {
     }
 
     // ========================================================================
+    // Unit Tests - Auto-Wrap SQL Strings
+    // ========================================================================
+
+    #[pg_test]
+    fn test_autowrap_sequence_plain_sql() {
+        // Plain SQL strings should be auto-wrapped
+        let result = crate::dsl::then_fn("SELECT 1", "SELECT 2");
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "THEN");
+        // Both children should exist as SQL nodes
+        assert!(fut.left_node.is_some());
+        assert!(fut.right_node.is_some());
+    }
+
+    #[pg_test]
+    fn test_autowrap_sequence_mixed() {
+        // Mix of explicit durable.sql() and plain SQL
+        let explicit = crate::dsl::sql("SELECT 1");
+        let result = crate::dsl::then_fn(&explicit, "SELECT 2");
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "THEN");
+    }
+
+    #[pg_test]
+    fn test_autowrap_as_named_plain_sql() {
+        // Plain SQL with naming
+        let result = crate::dsl::as_named("my_result", "SELECT 42 as answer");
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "SQL");
+        assert_eq!(fut.result_name, Some("my_result".to_string()));
+    }
+
+    #[pg_test]
+    fn test_autowrap_if_all_plain_sql() {
+        // All three arguments as plain SQL
+        let result = crate::dsl::if_fn(
+            "SELECT true",
+            "SELECT 'yes'",
+            "SELECT 'no'"
+        );
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "IF");
+    }
+
+    #[pg_test]
+    fn test_autowrap_join_plain_sql() {
+        // Both branches as plain SQL
+        let result = crate::dsl::join("SELECT 1", "SELECT 2");
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "JOIN");
+    }
+
+    #[pg_test]
+    fn test_autowrap_loop_plain_sql() {
+        // Loop body as plain SQL
+        let result = crate::dsl::loop_fn("SELECT 1");
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "LOOP");
+    }
+
+    #[pg_test]
+    fn test_autowrap_start_plain_sql() {
+        // Start with plain SQL - simplest possible orchestration
+        let instance_id = crate::dsl::start("SELECT 42", Some("autowrap-test"));
+        assert_eq!(instance_id.len(), 8);
+        
+        // Verify instance was created
+        let count = Spi::get_one::<i64>(&format!(
+            "SELECT COUNT(*) FROM durable.instances WHERE id = '{}'", instance_id
+        )).unwrap().unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[pg_test]
+    fn test_autowrap_via_sql_operator() {
+        // Test that SQL operator ~> works with plain strings
+        let result = Spi::get_one::<String>(
+            "SELECT 'SELECT 1' ~> 'SELECT 2'"
+        ).unwrap().unwrap();
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.node_type, "THEN");
+    }
+
+    #[pg_test]
+    fn test_autowrap_via_as_operator() {
+        // Test that SQL operator |=> works with plain strings
+        let result = Spi::get_one::<String>(
+            "SELECT 'SELECT 42' |=> 'my_var'"
+        ).unwrap().unwrap();
+        let fut = Durofut::from_json(&result);
+        assert_eq!(fut.result_name, Some("my_var".to_string()));
+    }
+
+    #[pg_test]
+    fn test_is_durofut_detection() {
+        // Test the detection logic
+        let sql_node = crate::dsl::sql("SELECT 1");
+        assert!(Durofut::is_durofut(&sql_node), "Should detect valid Durofut");
+        
+        assert!(!Durofut::is_durofut("SELECT 1"), "Plain SQL should not be detected as Durofut");
+        assert!(!Durofut::is_durofut("{}"), "Empty JSON should not be Durofut");
+        assert!(!Durofut::is_durofut("{\"node_id\": \"short\"}"), "Invalid node_id should not be Durofut");
+    }
+
+    // ========================================================================
     // Integration Tests - P0: Critical Path
     // 
     // LIMITATION: pgrx test framework doesn't apply shared_preload_libraries,

@@ -1,15 +1,13 @@
-# pg_durable MVP
-
-**Minimal Viable Proof-of-Concept**
+# pg_durable MVP User Guide
 
 ---
 
 ## Goal
 
 Prove the core architecture works end-to-end:
-1. SQL DSL functions build a workflow graph
+1. SQL DSL functions build an orchestration graph
 2. Graph is stored in PostgreSQL tables
-3. duroxide runtime loads and executes the graph
+3. Duroxide runtime loads and executes the graph
 4. Execution is durable (survives restarts)
 
 ---
@@ -20,17 +18,29 @@ Prove the core architecture works end-to-end:
 
 | Function | Description |
 |----------|-------------|
-| `durable.sql(query, ...args)` | Execute SQL, return result as JSON |
-| `durable.then(a, b)` | Sequential: run a, then b |
-| `durable.as(name, fut)` | Name a future's result for `$name` reference |
-| `durable.start(fut)` | Start a workflow, return instance ID |
+| `durable.sql(query)` | Execute SQL, return result as JSON |
+| `durable.sleep(seconds)` | Pause execution for N seconds |
+| `durable.if(cond, then, else)` | Conditional branching |
+| `durable.join(a, b)` | Parallel execution, wait for all |
+| `durable.loop(body)` | Infinite loop (use with break conditions) |
+| `durable.start(fut, label)` | Start an orchestration, return instance ID |
 
 ### Operators
 
 | Operator | Expands To | Description |
 |----------|------------|-------------|
 | `a ~> b` | `durable.then(a, b)` | Sequential composition |
-| `a => 'name'` | `durable.as('name', a)` | Name result for `$name` reference |
+| `a \|=> 'name'` | `durable.as('name', a)` | Name result for `$name` reference |
+
+### Auto-Wrap SQL
+
+Plain SQL strings are automatically wrapped in `durable.sql()` calls:
+
+```sql
+-- These are equivalent:
+'SELECT 1' ~> 'SELECT 2'
+durable.sql('SELECT 1') ~> durable.sql('SELECT 2')
+```
 
 ### Variable References
 
@@ -43,14 +53,14 @@ Results can be referenced in subsequent steps:
 
 ## What Users Can Build with MVP
 
-### Example 1: Sequential SQL Workflow
+### Example 1: Sequential SQL Orchestration
 
 ```sql
 SELECT durable.start(
-    durable.sql('SELECT count(*) as total FROM users') => 'users'
-    ~> durable.sql('SELECT count(*) as total FROM orders') => 'orders'  
-    ~> durable.sql('INSERT INTO daily_stats (date, users, orders) VALUES (now(), $1, $2)',
-        $users.rows[0].total, $orders.rows[0].total)
+    'SELECT count(*) as total FROM users' |=> 'users'         -- step 1, save as $users
+    ~> 'SELECT count(*) as total FROM orders' |=> 'orders'    -- step 2, save as $orders
+    ~> 'INSERT INTO daily_stats (date, users, orders) 
+        VALUES (now(), $users, $orders)'                      -- step 3, use both
 );
 ```
 
@@ -61,18 +71,20 @@ SELECT durable.start(
 
 **Why it's useful:**
 - Each step is checkpointed — if the runtime crashes after step 2, it resumes at step 3
-- The workflow survives database restarts (state is in tables)
+- The orchestration survives database restarts (state is in tables)
 - No external job scheduler needed
 
 ### Example 2: ETL Pipeline
 
 ```sql
 SELECT durable.start(
-    durable.sql('SELECT id, raw_data FROM staging.events WHERE processed = false LIMIT 100') => 'batch'
-    ~> durable.sql('INSERT INTO warehouse.events SELECT id, parse_json(raw_data) FROM staging.events WHERE id = ANY($1)',
-        $batch.rows[*].id) => 'loaded'
-    ~> durable.sql('UPDATE staging.events SET processed = true WHERE id = ANY($1)',
-        $batch.rows[*].id)
+    'SELECT id, raw_data FROM staging.events 
+     WHERE processed = false LIMIT 100' |=> 'batch'           -- extract
+    ~> 'INSERT INTO warehouse.events 
+        SELECT id, parse_json(raw_data) FROM staging.events 
+        WHERE id = ANY($batch)' |=> 'loaded'                  -- transform & load
+    ~> 'UPDATE staging.events SET processed = true 
+        WHERE id = ANY($batch)'                               -- mark done
 );
 ```
 
@@ -81,26 +93,133 @@ SELECT durable.start(
 2. Transform and load into warehouse
 3. Mark as processed
 
-### Example 3: Data Aggregation
+### Example 3: Conditional Processing
 
 ```sql
 SELECT durable.start(
-    durable.sql('SELECT category, sum(amount) as total FROM orders GROUP BY category') => 'sales'
-    ~> durable.sql('SELECT category, count(*) as total FROM returns GROUP BY category') => 'returns'
-    ~> durable.sql('INSERT INTO reports.summary SELECT $1::jsonb, $2::jsonb, now()',
-        $sales, $returns)
+    'SELECT count(*) as cnt FROM pending_jobs' |=> 'jobs'
+    ~> durable.if(
+        'SELECT $jobs > 0',                                   -- condition
+        'INSERT INTO log VALUES (''Processing jobs'')'        -- then branch
+            ~> 'CALL process_pending_jobs()',
+        'INSERT INTO log VALUES (''No jobs to process'')'     -- else branch
+    )
 );
 ```
 
-### Example 4: Audit Trail
+**What this does:**
+1. Check if there are pending jobs
+2. If yes: log and process them
+3. If no: log that there's nothing to do
+
+### Example 4: Parallel Data Aggregation
 
 ```sql
 SELECT durable.start(
-    durable.sql('INSERT INTO audit_log (action, timestamp) VALUES (''start'', now())')
-    ~> durable.sql('DELETE FROM temp_data WHERE created_at < now() - interval ''7 days''') => 'deleted'
-    ~> durable.sql('INSERT INTO audit_log (action, timestamp, details) VALUES (''cleanup'', now(), $1)',
-        '{"rows_deleted": ' || $deleted.row_count || '}')
+    durable.join(                                             -- run in parallel
+        'SELECT category, sum(amount) as total 
+         FROM orders GROUP BY category' |=> 'sales',          -- branch 1
+        'SELECT category, count(*) as total 
+         FROM returns GROUP BY category' |=> 'returns'        -- branch 2
+    )                                                         -- waits for both
+    ~> 'INSERT INTO reports.summary 
+        SELECT $sales::jsonb, $returns::jsonb, now()'         -- runs after join
 );
+```
+
+**What this does:**
+1. Run sales and returns queries in parallel
+2. When both complete, insert combined results
+
+### Example 5: Scheduled Cleanup with Sleep
+
+```sql
+SELECT durable.start(
+    durable.loop(                                             -- infinite loop
+        'DELETE FROM temp_data 
+         WHERE created_at < now() - interval ''7 days''' |=> 'deleted'
+        ~> 'INSERT INTO audit_log (action, details) 
+            VALUES (''cleanup'', $deleted)'                   -- log results
+        ~> durable.sleep(3600)                                -- sleep 1 hour
+    ),                                                        -- then repeat
+    'hourly-cleanup'                                          -- instance label
+);
+```
+
+**What this does:**
+1. Delete old temp data
+2. Log the cleanup
+3. Sleep for 1 hour
+4. Repeat forever (survives restarts)
+
+### Example 6: Multi-Step Validation Pipeline
+
+```sql
+SELECT durable.start(
+    'SELECT * FROM submissions 
+     WHERE status = ''pending'' LIMIT 1' |=> 'submission'     -- fetch one
+    ~> durable.if(
+        'SELECT $submission IS NOT NULL',                     -- check if found
+        -- THEN: validate the submission
+        'UPDATE submissions SET status = ''validating'' 
+         WHERE id = $submission.id'
+            ~> durable.join(                                  -- parallel validation
+                'SELECT validate_schema($submission.data)' |=> 'schema_ok',
+                'SELECT validate_rules($submission.data)' |=> 'rules_ok'
+            )
+            ~> durable.if(
+                'SELECT $schema_ok AND $rules_ok',            -- both passed?
+                'UPDATE submissions SET status = ''approved'' 
+                 WHERE id = $submission.id',                  -- approve
+                'UPDATE submissions SET status = ''rejected'' 
+                 WHERE id = $submission.id'                   -- reject
+            ),
+        -- ELSE: nothing to do
+        'SELECT ''no pending submissions'''
+    ),
+    'submission-validator'
+);
+```
+
+---
+
+## Monitoring & Visualization
+
+### Check Orchestration Status
+
+```sql
+SELECT * FROM durable.instance_info('abc12345');
+```
+
+### View Orchestration Graph
+
+```sql
+-- Live instance with execution status
+SELECT durable.explain('abc12345');
+
+-- Dry-run: visualize without executing
+SELECT durable.explain($$
+    'SELECT 1' |=> 'a'
+    ~> 'SELECT 2' |=> 'b'
+    ~> durable.if('SELECT $a > 0', 'SELECT yes', 'SELECT no')
+$$);
+```
+
+Example output:
+```
+SQL |=> 'a': SELECT 1
+→ SQL |=> 'b': SELECT 2
+→ IF
+    ✓ then:
+      SQL: SELECT yes
+    ✗ else:
+      SQL: SELECT no
+```
+
+### List All Instances
+
+```sql
+SELECT * FROM durable.list_instances();
 ```
 
 ---
@@ -108,374 +227,187 @@ SELECT durable.start(
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        PostgreSQL                                │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                   pg_durable Extension (pgrx)               │ │
-│  │                                                              │ │
-│  │  ┌──────────────────────────────────────────────────────┐  │ │
-│  │  │                   SQL DSL Layer                       │  │ │
-│  │  │                                                        │  │ │
-│  │  │  durable.sql()   → Creates SQL node in duro_nodes    │  │ │
-│  │  │  durable.then()  → Creates THEN node linking nodes   │  │ │
-│  │  │  durable.as()    → Wraps node with result_name       │  │ │
-│  │  │  durable.start() → Creates instance, spawns runtime  │  │ │
-│  │  │                                                        │  │ │
-│  │  └──────────────────────────────────────────────────────┘  │ │
-│  │                                                              │ │
-│  │  ┌──────────────────────────────────────────────────────┐  │ │
-│  │  │              duroxide Runtime (in-process)            │  │ │
-│  │  │                                                        │  │ │
-│  │  │  • Runs as background worker in PostgreSQL           │  │ │
-│  │  │  • Polls duro_instances for new work                 │  │ │
-│  │  │  • Loads workflow graph from duro_nodes              │  │ │
-│  │  │  • Executes as duroxide orchestration                │  │ │
-│  │  │  • Each step = duroxide activity (checkpointed)      │  │ │
-│  │  │  • Survives crash via replay                         │  │ │
-│  │  │                                                        │  │ │
-│  │  │  Activities:                                          │  │ │
-│  │  │    execute_sql  — Run SQL, return JSON result        │  │ │
-│  │  │                                                        │  │ │
-│  │  └──────────────────────────────────────────────────────┘  │ │
-│  │                                                              │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                    durable Schema                           │ │
-│  │                                                              │ │
-│  │  duro_nodes (id, instance_id, node_type, config, status,   │ │
-│  │              result, result_name, left_node, right_node)   │ │
-│  │                                                              │ │
-│  │  duro_instances (id, root_node, status)                    │ │
-│  │                                                              │ │
-│  │  duroxide internal tables (managed by duroxide-pg)         │ │
-│  │                                                              │ │
-│  └────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                         PostgreSQL                             │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                pg_durable Extension (pgrx)               │  │
+│  │                                                          │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │                  SQL DSL Layer                     │  │  │
+│  │  │                                                    │  │  │
+│  │  │  durable.sql()   → Creates SQL node                │  │  │
+│  │  │  ~> operator     → Creates THEN node linking nodes │  │  │
+│  │  │  |=> operator    → Sets result_name on node        │  │  │
+│  │  │  durable.start() → Creates instance, triggers run  │  │  │
+│  │  │                                                    │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  │                                                          │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │           Duroxide Runtime (background worker)     │  │  │
+│  │  │                                                    │  │  │
+│  │  │  • Runs as background worker in PostgreSQL         │  │  │
+│  │  │  • Polls durable.instances for new work            │  │  │
+│  │  │  • Loads orchestration graph from durable.nodes    │  │  │
+│  │  │  • Executes as duroxide orchestration              │  │  │
+│  │  │  • Each step = duroxide activity (checkpointed)    │  │  │
+│  │  │  • Survives crash via replay                       │  │  │
+│  │  │                                                    │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  │                                                          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                                                                │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │                     durable Schema                       │  │
+│  │                                                          │  │
+│  │  durable.nodes (id, instance_id, node_type, query,       │  │
+│  │                 status, result, result_name,             │  │
+│  │                 left_node, right_node)                   │  │
+│  │                                                          │  │
+│  │  durable.instances (id, label, root_node, status, out)   │  │
+│  │                                                          │  │
+│  │  duroxide internal tables (SQLite store for replay)      │  │
+│  │                                                          │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────┘
 ```
 
 **Key insight:** The duroxide runtime runs inside the PostgreSQL extension as a background worker, not as a separate process. This simplifies deployment and ensures the runtime has direct access to PostgreSQL internals.
 
 ---
 
-## Implementation Steps
+## Under the Covers: DSL Translation
 
-### Step 1: pgrx Extension with duroxide Hello World
+The ergonomic SQL syntax translates to explicit function calls and database operations.
 
-**Goal:** Create a pgrx extension that runs duroxide orchestrations as a background worker.
+### Auto-Wrap Translation
 
-**Tasks:**
-1. Initialize pgrx project:
-   ```bash
-   cargo pgrx init
-   cargo pgrx new pg_durable
-   ```
-2. Add dependencies to `Cargo.toml`:
-   ```toml
-   [dependencies]
-   pgrx = "0.12"
-   duroxide = "0.1"
-   duroxide-pg = "0.1"
-   tokio = { version = "1", features = ["full"] }
-   serde = { version = "1.0", features = ["derive"] }
-   serde_json = "1.0"
-   uuid = { version = "1.0", features = ["v4", "serde"] }
-   ```
-3. Create `durable` schema on extension load
-4. Configure duroxide-pg to use `durable` schema for its internal tables
-5. Implement background worker that runs duroxide runtime:
-   ```rust
-   #[pg_guard]
-   pub extern "C" fn _PG_init() {
-       BackgroundWorkerBuilder::new("pg_durable_worker")
-           .set_function("bg_worker_main")
-           .set_library("pg_durable")
-           .enable_spi_access()
-           .load();
-   }
-   
-   #[pg_guard]
-   #[no_mangle]
-   pub extern "C" fn bg_worker_main(_arg: pg_sys::Datum) {
-       // Initialize duroxide runtime
-       // Poll for work and execute orchestrations
-   }
-   ```
-6. Implement trivial hello world orchestration:
-   ```rust
-   async fn hello_world(ctx: OrchestrationContext, name: String) -> Result<String, String> {
-       let greeting = ctx.schedule_activity("SayHello", name.clone())
-           .into_activity().await?;
-       Ok(greeting)
-   }
-   ```
-7. Implement `SayHello` activity using SPI to log a message
-8. Add SQL function to trigger the orchestration:
-   ```rust
-   #[pg_extern]
-   fn hello(name: &str) -> String {
-       // Start hello_world orchestration
-       // Return orchestration ID
-   }
-   ```
+Plain SQL strings are automatically wrapped:
 
-**Success Criteria:**
-- [ ] Extension loads without error
-- [ ] Background worker starts
-- [ ] `SELECT durable.hello('World')` starts orchestration
-- [ ] Orchestration runs to completion
-- [ ] duroxide tables exist in `durable` schema
-- [ ] Kill PostgreSQL → restart → orchestration resumes via replay
+| You Write | Translates To |
+|-----------|---------------|
+| `'SELECT 1' ~> 'SELECT 2'` | `durable.sql('SELECT 1') ~> durable.sql('SELECT 2')` |
+| `'SELECT x' \|=> 'var'` | `durable.sql('SELECT x') \|=> 'var'` |
+| `durable.if('SELECT true', 'a', 'b')` | `durable.if(durable.sql('SELECT true'), durable.sql('a'), durable.sql('b'))` |
+| `durable.join('SELECT 1', 'SELECT 2')` | `durable.join(durable.sql('SELECT 1'), durable.sql('SELECT 2'))` |
+| `durable.loop('SELECT 1')` | `durable.loop(durable.sql('SELECT 1'))` |
+| `durable.start('SELECT 1')` | `durable.start(durable.sql('SELECT 1'))` |
 
-### Step 2: Generic SQL Activity
+### Detection Logic
 
-**Goal:** Create an activity that can execute any SQL query using SPI.
+The system detects whether a string is already a `Durofut` (orchestration node) or plain SQL:
 
-**Tasks:**
-1. Implement `execute_sql` activity using pgrx SPI:
-   ```rust
-   fn execute_sql(query: String, params: Vec<Value>) -> Result<Value, String> {
-       Spi::connect(|client| {
-           let result = client.select(&query, None, None)?;
-           // Convert to JSON
-           Ok(json!({
-               "rows": rows_to_json(result),
-               "row_count": result.len()
-           }))
-       })
-   }
-   ```
-2. Register with duroxide activity registry
-3. Test with simple queries via SPI
-4. Test with parameterized queries
-5. Verify result JSON structure: `{rows: [...], row_count: N}`
-
-**Success Criteria:**
-- [ ] Can execute `SELECT * FROM pg_tables LIMIT 5`
-- [ ] Can execute `INSERT ... RETURNING *`
-- [ ] Parameters are properly substituted
-- [ ] Errors are properly propagated
-
-### Step 3: Workflow Tables
-
-**Goal:** Create the tables that store workflow definitions and state.
-
-**Tasks:**
-1. Create `durofut` composite type:
-   ```sql
-   CREATE TYPE durable.durofut AS (
-       node_id UUID,
-       node_type TEXT
-   );
-   ```
-2. Create `duro_nodes` table (simplified for MVP):
-   ```sql
-   CREATE TABLE durable.duro_nodes (
-       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-       instance_id UUID,
-       node_type TEXT NOT NULL,  -- 'SQL', 'THEN'
-       config JSONB,
-       status TEXT DEFAULT 'pending',
-       result JSONB,
-       result_name TEXT,
-       left_node UUID,
-       right_node UUID
-   );
-   ```
-3. Create `duro_instances` table:
-   ```sql
-   CREATE TABLE durable.duro_instances (
-       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-       root_node UUID NOT NULL,
-       status TEXT DEFAULT 'pending'
-   );
-   ```
-
-**Success Criteria:**
-- [ ] Tables are created on extension load
-- [ ] Can manually insert into tables
-- [ ] Foreign key relationships work correctly
-
-### Step 4: DSL Functions
-
-**Goal:** Implement the SQL functions that build the workflow graph.
-
-**Tasks:**
-1. `durable.sql(query, ...args)`:
-   ```rust
-   #[pg_extern]
-   fn sql(query: &str) -> Durofut {
-       // Insert node into duro_nodes
-       // Return durofut with node_id
-   }
-   ```
-2. `durable.then(a, b)`:
-   ```rust
-   #[pg_extern]
-   fn then(a: Durofut, b: Durofut) -> Durofut {
-       // Insert THEN node linking a.node_id and b.node_id
-   }
-   ```
-3. `durable.as(name, fut)`:
-   ```rust
-   #[pg_extern]
-   fn as_named(name: &str, fut: Durofut) -> Durofut {
-       // Update fut's node with result_name = name
-   }
-   ```
-4. Implement `~>` operator (calls `then()`)
-5. Implement `=>` operator (calls `as_named()`)
-
-**Success Criteria:**
-- [ ] `SELECT durable.sql('SELECT 1')` returns durofut
-- [ ] `SELECT durable.sql('A') ~> durable.sql('B')` creates linked nodes
-- [ ] `SELECT durable.sql('A') => 'result'` sets result_name
-
-### Step 5: Control Plane
-
-**Goal:** Implement `durable.start()` and wire it to the background worker.
-
-**Tasks:**
-1. `durable.start(fut)`:
-   ```rust
-   #[pg_extern]
-   fn start(fut: Durofut) -> Uuid {
-       // Create instance in duro_instances
-       // Set instance_id on all nodes in the graph
-       // Notify background worker (via pg_notify or shared memory)
-       // Return instance ID
-   }
-   ```
-2. Background worker polls for new instances:
-   ```rust
-   // In bg_worker_main
-   loop {
-       Spi::connect(|client| {
-           let instances = client.select(
-               "SELECT id, root_node FROM durable.duro_instances WHERE status = 'pending'",
-               None, None
-           )?;
-           for instance in instances {
-               spawn_orchestration(instance);
-           }
-       });
-       std::thread::sleep(poll_interval);
-   }
-   ```
-3. Orchestration loads graph and executes via duroxide:
-   ```rust
-   async fn execute_graph(ctx: OrchestrationContext, root_node: Uuid) -> Result<Value, String> {
-       let node = load_node(root_node)?;  // Uses SPI
-       match node.node_type.as_str() {
-           "SQL" => {
-               ctx.schedule_activity("execute_sql", node.config).into_activity().await
-           }
-           "THEN" => {
-               execute_graph(ctx.clone(), node.left_node).await?;
-               execute_graph(ctx, node.right_node).await
-           }
-           _ => Err("Unknown node type".to_string())
-       }
-   }
-   ```
-
-**Success Criteria:**
-- [ ] `SELECT durable.start(...)` returns UUID
-- [ ] Background worker picks up new instance within 1 second
-- [ ] Instance status changes to 'running' then 'completed'
-
-### Step 6: Variable Substitution
-
-**Goal:** Enable referencing results from previous steps.
-
-**Tasks:**
-1. Implement context that tracks named results
-2. Before executing a node, substitute `$name` references in config
-3. Support `$name.rows[0].column` syntax via JSON path
-
-**Implementation:**
 ```rust
-fn substitute_vars(config: &Value, context: &HashMap<String, Value>) -> Value {
-    // Walk JSON, replace $name.path with actual values
+// A Durofut is valid JSON with node_id (8 hex chars) and node_type
+fn is_durofut(s: &str) -> bool {
+    if let Ok(v) = serde_json::from_str::<Value>(s) {
+        if let (Some(id), Some(_)) = (v["node_id"].as_str(), v["node_type"].as_str()) {
+            return id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit());
+        }
+    }
+    false
 }
 ```
 
-**Success Criteria:**
-- [ ] `$users` resolves to full result JSON
-- [ ] `$users.rows[0].total` resolves to specific value
-- [ ] Substitution works in SQL query parameters
+### Node Creation
 
-### Step 7: End-to-End Test
+Each DSL function creates a row in `durable.nodes`:
 
-**Goal:** Prove durability works.
-
-**Test Scenario:**
 ```sql
-SELECT durable.start(
-    durable.sql('SELECT 1 as step1') => 'a'
-    ~> durable.sql('SELECT 2 as step2') => 'b'
-    ~> durable.sql('INSERT INTO test_results VALUES ($1, $2)', $a.rows[0].step1, $b.rows[0].step2)
-);
+-- durable.sql('SELECT count(*) FROM users')
+INSERT INTO durable.nodes (id, node_type, query)
+VALUES ('a1b2c3d4', 'SQL', 'SELECT count(*) FROM users');
+-- Returns: {"node_id":"a1b2c3d4","node_type":"SQL",...}
 ```
 
-**Test Steps:**
-1. Start workflow
-2. Wait for step 1 to complete
-3. Kill runtime process
-4. Verify step 1 result is in duroxide state
-5. Restart runtime
-6. Verify workflow resumes from step 2
-7. Verify final INSERT has correct values
+### Sequence (~>) Translation
 
-**Success Criteria:**
-- [ ] Workflow completes correctly when uninterrupted
-- [ ] Workflow completes correctly after crash/restart
-- [ ] No duplicate SQL executions after restart
-- [ ] Final result is correct
+The `~>` operator creates a `THEN` node linking two nodes:
 
----
+```sql
+-- 'SELECT 1' ~> 'SELECT 2'
+-- Step 1: Create SQL node for 'SELECT 1' → id='aaaa1111'
+-- Step 2: Create SQL node for 'SELECT 2' → id='bbbb2222'  
+-- Step 3: Create THEN node linking them
+INSERT INTO durable.nodes (id, node_type, left_node, right_node)
+VALUES ('cccc3333', 'THEN', 'aaaa1111', 'bbbb2222');
+```
 
-## Non-Goals for MVP
+### Naming (|=>) Translation
 
-The following are explicitly **out of scope** for MVP:
+The `|=>` operator sets `result_name` on a node:
 
-- `durable.func()` — user-defined function dispatch
-- `durable.join()`, `durable.race()` — parallel execution
-- `durable.if()`, `durable.loop()`, `durable.for_each()` — control flow
-- `durable.sleep()` — durable timers
-- `durable.wait_*()` — wait primitives
-- `durable.http_*()` — HTTP calls
-- Error handling, retry, saga patterns
-- `durable.status()`, `durable.cancel()` — control plane queries
-- `&` and `|` operators
+```sql
+-- 'SELECT 1' |=> 'my_var'
+-- Step 1: Create SQL node → id='aaaa1111'
+-- Step 2: Update the node with result_name
+UPDATE durable.nodes SET result_name = 'my_var' WHERE id = 'aaaa1111';
+```
 
-These will be added in subsequent phases after MVP is validated.
+### Instance Creation
 
----
+`durable.start()` creates an instance and triggers execution:
 
-## Timeline
+```sql
+-- durable.start('SELECT 1' ~> 'SELECT 2', 'my-job')
+-- Step 1: Build the graph (creates nodes as above)
+-- Step 2: Create instance
+INSERT INTO durable.instances (id, label, root_node, status)
+VALUES ('inst0001', 'my-job', 'cccc3333', 'pending');
+-- Step 3: Update all nodes with instance_id
+UPDATE durable.nodes SET instance_id = 'inst0001' WHERE id IN (...);
+-- Step 4: Background worker picks up and executes
+```
 
-| Step | Description | Effort |
-|------|-------------|--------|
-| 1 | duroxide-pg hello world | 0.5 day |
-| 2 | Generic SQL activity | 0.5 day |
-| 3 | Extension skeleton | 0.5 day |
-| 4 | DSL functions + operators | 1 day |
-| 5 | Control plane + runtime integration | 1 day |
-| 6 | Variable substitution | 0.5 day |
-| 7 | End-to-end testing | 0.5 day |
+### Runtime Execution
 
-**Total: ~4.5 days**
+The background worker executes nodes recursively:
 
----
+```rust
+async fn execute_node(node_id: &str, ctx: &mut Context) -> Result<Value> {
+    let node = load_node(node_id)?;
+    
+    match node.node_type.as_str() {
+        "SQL" => {
+            // Execute via duroxide activity (checkpointed)
+            let result = ctx.activity("ExecuteSQL", &node.query).await?;
+            update_node_result(node_id, &result)?;
+            if let Some(name) = node.result_name {
+                ctx.variables.insert(name, result.clone());
+            }
+            Ok(result)
+        }
+        "THEN" => {
+            execute_node(&node.left_node, ctx).await?;
+            execute_node(&node.right_node, ctx).await
+        }
+        "IF" => {
+            let cond = execute_node(&node.condition_node, ctx).await?;
+            if cond.as_bool() {
+                execute_node(&node.left_node, ctx).await
+            } else {
+                execute_node(&node.right_node, ctx).await
+            }
+        }
+        "JOIN" => {
+            // Execute branches in parallel
+            let (a, b) = tokio::join!(
+                execute_node(&node.left_node, ctx),
+                execute_node(&node.right_node, ctx)
+            );
+            Ok(json!({"left": a?, "right": b?}))
+        }
+        // ... other node types
+    }
+}
+```
 
-## Success Metrics
+### Durability via Replay
 
-MVP is complete when:
+Each activity execution is checkpointed to SQLite:
 
-1. ✅ User can write a 3-step SQL workflow using `~>` and `=>`
-2. ✅ Workflow executes correctly
-3. ✅ Killing runtime mid-workflow → restart → workflow completes
-4. ✅ No duplicate step executions after restart
-5. ✅ Variable substitution works (`$name.rows[0].column`)
-6. ✅ Instance status reflects actual state
+1. **First execution**: Activity runs, result stored in SQLite
+2. **On crash**: PostgreSQL restarts, background worker resumes
+3. **Replay**: Duroxide replays from SQLite - completed activities return cached results
+4. **Continue**: Execution resumes from where it left off
+
+This is why orchestrations survive crashes without re-executing completed steps.

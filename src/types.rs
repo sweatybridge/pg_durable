@@ -232,6 +232,36 @@ impl Durofut {
     pub fn from_json(s: &str) -> Self {
         serde_json::from_str(s).expect("failed to deserialize Durofut")
     }
+    
+    /// Check if a string is a valid Durofut JSON
+    /// Returns true if it's valid JSON with a node_id field that looks like our format
+    pub fn is_durofut(s: &str) -> bool {
+        if let Ok(fut) = serde_json::from_str::<Durofut>(s) {
+            // Check if node_id is 8 hex characters (our format)
+            fut.node_id.len() == 8 && fut.node_id.chars().all(|c| c.is_ascii_hexdigit())
+        } else {
+            false
+        }
+    }
+    
+    /// Ensure a string is a Durofut - if it's already one, parse it; if not, treat as SQL and create a node
+    pub fn ensure(s: &str) -> Self {
+        if Self::is_durofut(s) {
+            Self::from_json(s)
+        } else {
+            // It's a plain SQL string - create a SQL node for it
+            let fut = Durofut {
+                node_id: short_id(),
+                node_type: "SQL".to_string(),
+                left_node: None,
+                right_node: None,
+                query: Some(s.to_string()),
+                result_name: None,
+            };
+            fut.insert_node();
+            fut
+        }
+    }
 
     /// Insert this node into the appropriate table (durable.nodes or temp table in explain mode)
     pub fn insert_node(&self) {
