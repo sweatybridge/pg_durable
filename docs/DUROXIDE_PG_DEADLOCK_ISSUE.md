@@ -276,26 +276,97 @@ We're happy to provide more information or test patches. This is blocking our ab
 **Our Rust initialization code:**
 
 ```rust
+use duroxide::{
+    OrchestrationContext, OrchestrationRegistry,
+    runtime::{self, registry::ActivityRegistry},
+};
 use duroxide_pg::PostgresProvider;
+use std::sync::Arc;
 
+// Create the PostgreSQL store
 let store = PostgresProvider::new_with_schema(&pg_conn_str, Some("duroxide"))
     .await
     .expect("Failed to create PostgreSQL store");
 
-let worker = Worker::new(store, worker_config);
-worker.run().await;
+// Register activities
+let activities = ActivityRegistry::builder()
+    .register("ExecuteSQL", |ctx: ActivityContext, query: String| async move {
+        // ... execute SQL ...
+    })
+    .build();
+
+// Register orchestrations
+let orchestrations = OrchestrationRegistry::builder()
+    .register("ExecuteWorkflow", |ctx: OrchestrationContext, input: String| async move {
+        // ... workflow logic ...
+    })
+    .register("ExecuteSubtree", |ctx: OrchestrationContext, input: String| async move {
+        // Used for parallel branches - each branch runs as a sub-orchestration
+    })
+    .build();
+
+// Start the runtime
+let runtime = runtime::Runtime::start_with_store(
+    Arc::new(store),
+    Arc::new(activities),
+    orchestrations
+).await;
 ```
 
-**Our orchestration scheduling:**
+**How we handle JOIN (parallel execution):**
 
 ```rust
-// When we need parallel execution, we schedule sub-orchestrations
-let branch_a = ctx.schedule_sub_orchestration("BranchA", input_a);
-let branch_b = ctx.schedule_sub_orchestration("BranchB", input_b);
-
-// Wait for both (this is where the deadlock occurs during item fetching)
-let (result_a, result_b) = futures::join!(branch_a, branch_b);
+// In our "join" node handler within the orchestration:
+"join" => {
+    let left_id = node.left_node.as_ref().ok_or("Missing left branch")?;
+    let right_id = node.right_node.as_ref().ok_or("Missing right branch")?;
+    
+    ctx.trace_info("Executing JOIN branches in parallel");
+    
+    // Serialize graph and results state for sub-orchestrations
+    let graph_json = serde_json::to_string(&graph)?;
+    let results_json = serde_json::to_string(&results)?;
+    
+    let left_input = serde_json::json!({
+        "graph": graph_json,
+        "node_id": left_id,
+        "results": results_json
+    }).to_string();
+    
+    let right_input = serde_json::json!({
+        "graph": graph_json,
+        "node_id": right_id,
+        "results": results_json
+    }).to_string();
+    
+    // Schedule sub-orchestrations for each branch
+    // THIS IS WHERE THE DEADLOCK OCCURS - when Duroxide tries to fetch
+    // orchestration items for both sub-orchestrations concurrently
+    let mut join_handles = Vec::new();
+    for input in vec![left_input, right_input] {
+        let fut = ctx.schedule_sub_orchestration("ExecuteSubtree", input)
+            .into_sub_orchestration();
+        join_handles.push(fut);
+    }
+    
+    // Wait for all branches to complete
+    let results_vec = futures::future::join_all(join_handles).await;
+    
+    // Process results...
+}
 ```
+
+**The deadlock scenario:**
+
+1. Main orchestration reaches JOIN node
+2. `ctx.schedule_sub_orchestration()` is called twice, scheduling two sub-orchestrations
+3. Duroxide runtime has multiple async tasks that poll for work
+4. Task A calls `fetch_orchestration_item()` to pick up the first sub-orchestration
+5. Task B calls `fetch_orchestration_item()` to pick up the second sub-orchestration  
+6. Both tasks try to INSERT/UPDATE the `instance_locks` table simultaneously
+7. **DEADLOCK** - both tasks wait for each other's transaction
+
+**Key observation:** The deadlock is in `duroxide-pg`'s `fetch_orchestration_item()` function, not in our application code. The issue is how `duroxide-pg` handles concurrent lock acquisition when multiple orchestration items become available at the same time.
 
 ---
 
