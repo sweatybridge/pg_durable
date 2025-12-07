@@ -10,6 +10,7 @@ pub mod types;
 pub mod dsl;
 pub mod runtime;
 pub mod monitoring;
+pub mod explain;
 
 // Re-export key types for tests
 pub use types::Durofut;
@@ -382,6 +383,114 @@ mod tests {
     }
 
     // ========================================================================
+    // Unit Tests - Explain Functionality
+    // ========================================================================
+
+    #[pg_test]
+    fn test_explain_detects_instance_id() {
+        // Create an instance first
+        let fut = crate::dsl::sql("SELECT 1");
+        let instance_id = crate::dsl::start(&fut, None);
+        
+        // Explain should recognize it as an instance ID
+        let result = crate::explain::explain(&instance_id);
+        // Should contain SQL node info, not an error
+        assert!(result.contains("SQL") || result.contains("SELECT"), 
+            "Expected SQL visualization, got: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_expression_simple_sql() {
+        // Dry-run explain of a simple SQL
+        let result = crate::explain::explain("durable.sql('SELECT 42')");
+        assert!(result.contains("SQL"), "Expected SQL in output: {}", result);
+        assert!(result.contains("42"), "Expected query content: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_expression_sequence() {
+        // Dry-run explain of a sequence
+        let result = crate::explain::explain(
+            "durable.sql('SELECT 1') ~> durable.sql('SELECT 2')"
+        );
+        // Should show sequence with arrows
+        assert!(result.contains("SELECT 1"), "Expected first query: {}", result);
+        assert!(result.contains("SELECT 2"), "Expected second query: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_expression_sleep() {
+        let result = crate::explain::explain("durable.sleep(60)");
+        assert!(result.contains("SLEEP"), "Expected SLEEP node: {}", result);
+        assert!(result.contains("60"), "Expected duration: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_expression_loop() {
+        let result = crate::explain::explain(
+            "durable.loop(durable.sql('SELECT 1'))"
+        );
+        assert!(result.contains("LOOP"), "Expected LOOP: {}", result);
+        assert!(result.contains("body"), "Expected body section: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_expression_if() {
+        let result = crate::explain::explain(
+            "durable.if(durable.sql('SELECT true'), durable.sql('SELECT yes'), durable.sql('SELECT no'))"
+        );
+        assert!(result.contains("IF"), "Expected IF: {}", result);
+        assert!(result.contains("then"), "Expected then branch: {}", result);
+        assert!(result.contains("else"), "Expected else branch: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_expression_join() {
+        let result = crate::explain::explain(
+            "durable.join(durable.sql('SELECT 1'), durable.sql('SELECT 2'))"
+        );
+        assert!(result.contains("JOIN"), "Expected JOIN: {}", result);
+        assert!(result.contains("branch"), "Expected branches: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_no_side_effects() {
+        // After explain, no orphan nodes should exist in durable.nodes
+        let before_count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM durable.nodes WHERE instance_id IS NULL"
+        ).unwrap().unwrap_or(0);
+        
+        let _ = crate::explain::explain(
+            "durable.sql('SELECT orphan_test') ~> durable.sleep(999)"
+        );
+        
+        let after_count: i64 = Spi::get_one(
+            "SELECT COUNT(*) FROM durable.nodes WHERE instance_id IS NULL"
+        ).unwrap().unwrap_or(0);
+        
+        // Should be the same - no orphan nodes added
+        assert_eq!(before_count, after_count, 
+            "Explain should not leave orphan nodes in durable.nodes");
+    }
+
+    #[pg_test]
+    fn test_explain_invalid_instance_id() {
+        // Test with non-existent instance ID
+        let result = crate::explain::explain("deadbeef");
+        assert!(result.contains("not found"), "Expected 'not found' error: {}", result);
+    }
+
+    #[pg_test]
+    fn test_explain_complex_nested() {
+        // Complex nested structure: loop with if inside
+        let result = crate::explain::explain(
+            "durable.loop(durable.if(durable.sql('SELECT true'), durable.sql('SELECT yes'), durable.sql('SELECT no')))"
+        );
+        assert!(result.contains("LOOP"), "Expected LOOP: {}", result);
+        assert!(result.contains("IF"), "Expected IF: {}", result);
+    }
+
+    // ========================================================================
     // Integration Tests - P0: Critical Path
     // 
     // LIMITATION: pgrx test framework doesn't apply shared_preload_libraries,
@@ -613,7 +722,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(500));
         
         // Check it's running
-        let status = get_duroxide_status(&instance_id);
+        let _status = get_duroxide_status(&instance_id);
         // Status might be Running or still pending
         
         // Cancel it

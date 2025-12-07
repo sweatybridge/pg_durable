@@ -233,7 +233,7 @@ impl Durofut {
         serde_json::from_str(s).expect("failed to deserialize Durofut")
     }
 
-    /// Insert this node into the durable.nodes table
+    /// Insert this node into the appropriate table (durable.nodes or temp table in explain mode)
     pub fn insert_node(&self) {
         let query_escaped = self.query.as_ref()
             .map(|q| q.replace('\'', "''"))
@@ -252,13 +252,27 @@ impl Durofut {
             .map(|id| format!("'{}'", id))
             .unwrap_or_else(|| "NULL".to_string());
 
+        // Check if we're in explain mode - use temp table if so
+        let target_table = if is_explain_mode() {
+            "_durable_explain_nodes"
+        } else {
+            "durable.nodes"
+        };
+
         let sql = format!(
-            r#"INSERT INTO durable.nodes (id, node_type, query, result_name, left_node, right_node)
+            r#"INSERT INTO {} (id, node_type, query, result_name, left_node, right_node)
                VALUES ('{}', '{}', {}, {}, {}, {})"#,
-            self.node_id, self.node_type, query_escaped, result_name_escaped, left_node, right_node
+            target_table, self.node_id, self.node_type, query_escaped, result_name_escaped, left_node, right_node
         );
         
         Spi::run(&sql).expect("failed to insert node");
     }
+}
+
+/// Check if we're in explain mode (for dry-run graph visualization)
+pub fn is_explain_mode() -> bool {
+    Spi::get_one::<bool>(
+        "SELECT COALESCE(current_setting('durable._explain_mode', true), 'false') = 'true'"
+    ).ok().flatten().unwrap_or(false)
 }
 
