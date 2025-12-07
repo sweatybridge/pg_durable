@@ -10,13 +10,13 @@ pg_durable is a PostgreSQL extension that brings durable, fault-tolerant functio
 
 1. [Overview](#overview)
 2. [Getting Started](#getting-started)
-3. [Test Data Setup](#test-data-setup)
-4. [Core Concepts](#core-concepts)
-5. [DSL Reference](#dsl-reference)
-6. [Function Examples](#function-examples)
-7. [Loops & Cron Jobs](#loops--cron-jobs)
-8. [Visualizing Functions](#visualizing-functions)
-9. [Monitoring](#monitoring)
+3. [Core Concepts](#core-concepts)
+4. [DSL Reference](#dsl-reference)
+5. [Function Examples](#function-examples)
+6. [Loops & Cron Jobs](#loops--cron-jobs)
+7. [Visualizing Functions](#visualizing-functions)
+8. [Monitoring](#monitoring)
+9. [Appendix: Test Data Setup](#appendix-test-data-setup)
 
 ---
 
@@ -78,151 +78,7 @@ SELECT durable.result('a1b2c3d4');
 
 ---
 
-## Test Data Setup
-
-Copy and paste this script into `psql` to create test schemas and sample data for the examples in this guide:
-
-```sql
--- ============================================================================
--- pg_durable Test Data Setup
--- Run this script to create sample schemas and data for testing functions
--- ============================================================================
-
--- Create a playground schema for testing
-CREATE SCHEMA IF NOT EXISTS playground;
-
--- Users table
-CREATE TABLE IF NOT EXISTS playground.users (
-    id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP DEFAULT now()
-);
-
--- Orders table
-CREATE TABLE IF NOT EXISTS playground.orders (
-    id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES playground.users(id),
-    amount DECIMAL(10,2) NOT NULL,
-    status VARCHAR(50) DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT now(),
-    processed_at TIMESTAMP
-);
-
--- Task queue for job processing examples
-CREATE TABLE IF NOT EXISTS playground.task_queue (
-    id SERIAL PRIMARY KEY,
-    payload JSONB NOT NULL,
-    status VARCHAR(50) DEFAULT 'pending',
-    priority INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT now(),
-    started_at TIMESTAMP,
-    completed_at TIMESTAMP
-);
-
--- Logs table for function output
-CREATE TABLE IF NOT EXISTS playground.logs (
-    id SERIAL PRIMARY KEY,
-    msg TEXT NOT NULL,
-    level VARCHAR(20) DEFAULT 'info',
-    created_at TIMESTAMP DEFAULT now()
-);
-
--- Heartbeats table for cron examples
-CREATE TABLE IF NOT EXISTS playground.heartbeats (
-    id SERIAL PRIMARY KEY,
-    ts TIMESTAMP NOT NULL,
-    source VARCHAR(100) DEFAULT 'pg_durable'
-);
-
--- Metrics table for aggregation examples
-CREATE TABLE IF NOT EXISTS playground.metrics (
-    id SERIAL PRIMARY KEY,
-    metric_name VARCHAR(100) NOT NULL,
-    metric_value DECIMAL(15,4) NOT NULL,
-    recorded_at TIMESTAMP DEFAULT now()
-);
-
--- Staging table for ETL examples
-CREATE TABLE IF NOT EXISTS playground.staging (
-    id SERIAL PRIMARY KEY,
-    data JSONB,
-    source_id INTEGER,
-    processed_at TIMESTAMP
-);
-
--- Target table for ETL examples
-CREATE TABLE IF NOT EXISTS playground.target (
-    id SERIAL PRIMARY KEY,
-    data JSONB,
-    source_id INTEGER,
-    processed_at TIMESTAMP,
-    loaded_at TIMESTAMP DEFAULT now()
-);
-
--- Insert sample users
-INSERT INTO playground.users (name, email, active) VALUES
-    ('Alice Johnson', 'alice@example.com', true),
-    ('Bob Smith', 'bob@example.com', true),
-    ('Carol White', 'carol@example.com', true),
-    ('David Brown', 'david@example.com', false),
-    ('Eve Davis', 'eve@example.com', true)
-ON CONFLICT (email) DO NOTHING;
-
--- Insert sample orders
-INSERT INTO playground.orders (user_id, amount, status) VALUES
-    (1, 99.99, 'pending'),
-    (1, 149.50, 'completed'),
-    (2, 75.00, 'pending'),
-    (3, 200.00, 'processing'),
-    (3, 50.00, 'pending'),
-    (5, 125.00, 'completed')
-ON CONFLICT DO NOTHING;
-
--- Insert sample tasks
-INSERT INTO playground.task_queue (payload, status, priority) VALUES
-    ('{"type": "email", "to": "alice@example.com", "subject": "Welcome!"}', 'pending', 1),
-    ('{"type": "email", "to": "bob@example.com", "subject": "Order Confirmation"}', 'pending', 2),
-    ('{"type": "report", "name": "daily_sales"}', 'pending', 0),
-    ('{"type": "cleanup", "target": "temp_files"}', 'completed', 0),
-    ('{"type": "sync", "source": "external_api"}', 'pending', 3)
-ON CONFLICT DO NOTHING;
-
--- Insert some staging data for ETL
-INSERT INTO playground.staging (data, source_id) VALUES
-    ('{"product": "Widget A", "qty": 10}', 1001),
-    ('{"product": "Widget B", "qty": 25}', 1002),
-    ('{"product": "Gadget X", "qty": 5}', 1003)
-ON CONFLICT DO NOTHING;
-
--- Insert sample metrics
-INSERT INTO playground.metrics (metric_name, metric_value) VALUES
-    ('cpu_usage', 45.5),
-    ('memory_usage', 72.3),
-    ('disk_io', 15.8),
-    ('network_in', 1024.0),
-    ('network_out', 512.5)
-ON CONFLICT DO NOTHING;
-
--- Create helper function for reports (used in examples)
-CREATE OR REPLACE FUNCTION playground.generate_report(report_type TEXT)
-RETURNS TEXT AS $$
-BEGIN
-    INSERT INTO playground.logs (msg, level) 
-    VALUES ('Generated report: ' || report_type, 'info');
-    RETURN 'Report generated: ' || report_type || ' at ' || now()::text;
-END;
-$$ LANGUAGE plpgsql;
-
--- Summary
-SELECT 'Test data setup complete!' as status;
-SELECT 'Users: ' || COUNT(*) FROM playground.users;
-SELECT 'Orders: ' || COUNT(*) FROM playground.orders;
-SELECT 'Tasks: ' || COUNT(*) FROM playground.task_queue;
-```
-
-After running this script, you can test durable functions against the `playground` schema.
+> 💡 **Want to run the examples?** The examples in this guide use a `playground` schema with sample data. See the [Appendix: Test Data Setup](#appendix-test-data-setup) to install it.
 
 ---
 
@@ -779,3 +635,151 @@ SELECT durable.result('id');
 -- Cancel
 SELECT durable.cancel('id', 'reason');
 ```
+
+---
+
+## Appendix: Test Data Setup
+
+Copy and paste this script into `psql` to create test schemas and sample data for the examples in this guide:
+
+```sql
+-- ============================================================================
+-- pg_durable Test Data Setup
+-- Run this script to create sample schemas and data for testing functions
+-- ============================================================================
+
+-- Create a playground schema for testing
+CREATE SCHEMA IF NOT EXISTS playground;
+
+-- Users table
+CREATE TABLE IF NOT EXISTS playground.users (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT now()
+);
+
+-- Orders table
+CREATE TABLE IF NOT EXISTS playground.orders (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES playground.users(id),
+    amount DECIMAL(10,2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    created_at TIMESTAMP DEFAULT now(),
+    processed_at TIMESTAMP
+);
+
+-- Task queue for job processing examples
+CREATE TABLE IF NOT EXISTS playground.task_queue (
+    id SERIAL PRIMARY KEY,
+    payload JSONB NOT NULL,
+    status VARCHAR(50) DEFAULT 'pending',
+    priority INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT now(),
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+-- Logs table for function output
+CREATE TABLE IF NOT EXISTS playground.logs (
+    id SERIAL PRIMARY KEY,
+    msg TEXT NOT NULL,
+    level VARCHAR(20) DEFAULT 'info',
+    created_at TIMESTAMP DEFAULT now()
+);
+
+-- Heartbeats table for cron examples
+CREATE TABLE IF NOT EXISTS playground.heartbeats (
+    id SERIAL PRIMARY KEY,
+    ts TIMESTAMP NOT NULL,
+    source VARCHAR(100) DEFAULT 'pg_durable'
+);
+
+-- Metrics table for aggregation examples
+CREATE TABLE IF NOT EXISTS playground.metrics (
+    id SERIAL PRIMARY KEY,
+    metric_name VARCHAR(100) NOT NULL,
+    metric_value DECIMAL(15,4) NOT NULL,
+    recorded_at TIMESTAMP DEFAULT now()
+);
+
+-- Staging table for ETL examples
+CREATE TABLE IF NOT EXISTS playground.staging (
+    id SERIAL PRIMARY KEY,
+    data JSONB,
+    source_id INTEGER,
+    processed_at TIMESTAMP
+);
+
+-- Target table for ETL examples
+CREATE TABLE IF NOT EXISTS playground.target (
+    id SERIAL PRIMARY KEY,
+    data JSONB,
+    source_id INTEGER,
+    processed_at TIMESTAMP,
+    loaded_at TIMESTAMP DEFAULT now()
+);
+
+-- Insert sample users
+INSERT INTO playground.users (name, email, active) VALUES
+    ('Alice Johnson', 'alice@example.com', true),
+    ('Bob Smith', 'bob@example.com', true),
+    ('Carol White', 'carol@example.com', true),
+    ('David Brown', 'david@example.com', false),
+    ('Eve Davis', 'eve@example.com', true)
+ON CONFLICT (email) DO NOTHING;
+
+-- Insert sample orders
+INSERT INTO playground.orders (user_id, amount, status) VALUES
+    (1, 99.99, 'pending'),
+    (1, 149.50, 'completed'),
+    (2, 75.00, 'pending'),
+    (3, 200.00, 'processing'),
+    (3, 50.00, 'pending'),
+    (5, 125.00, 'completed')
+ON CONFLICT DO NOTHING;
+
+-- Insert sample tasks
+INSERT INTO playground.task_queue (payload, status, priority) VALUES
+    ('{"type": "email", "to": "alice@example.com", "subject": "Welcome!"}', 'pending', 1),
+    ('{"type": "email", "to": "bob@example.com", "subject": "Order Confirmation"}', 'pending', 2),
+    ('{"type": "report", "name": "daily_sales"}', 'pending', 0),
+    ('{"type": "cleanup", "target": "temp_files"}', 'completed', 0),
+    ('{"type": "sync", "source": "external_api"}', 'pending', 3)
+ON CONFLICT DO NOTHING;
+
+-- Insert some staging data for ETL
+INSERT INTO playground.staging (data, source_id) VALUES
+    ('{"product": "Widget A", "qty": 10}', 1001),
+    ('{"product": "Widget B", "qty": 25}', 1002),
+    ('{"product": "Gadget X", "qty": 5}', 1003)
+ON CONFLICT DO NOTHING;
+
+-- Insert sample metrics
+INSERT INTO playground.metrics (metric_name, metric_value) VALUES
+    ('cpu_usage', 45.5),
+    ('memory_usage', 72.3),
+    ('disk_io', 15.8),
+    ('network_in', 1024.0),
+    ('network_out', 512.5)
+ON CONFLICT DO NOTHING;
+
+-- Create helper function for reports (used in examples)
+CREATE OR REPLACE FUNCTION playground.generate_report(report_type TEXT)
+RETURNS TEXT AS $$
+BEGIN
+    INSERT INTO playground.logs (msg, level) 
+    VALUES ('Generated report: ' || report_type, 'info');
+    RETURN 'Report generated: ' || report_type || ' at ' || now()::text;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Summary
+SELECT 'Test data setup complete!' as status;
+SELECT 'Users: ' || COUNT(*) FROM playground.users;
+SELECT 'Orders: ' || COUNT(*) FROM playground.orders;
+SELECT 'Tasks: ' || COUNT(*) FROM playground.task_queue;
+```
+
+After running this script, you can test durable functions against the `playground` schema.
