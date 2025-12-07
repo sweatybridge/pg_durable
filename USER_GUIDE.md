@@ -585,27 +585,77 @@ SQL |=> 'a': SELECT 1
 
 ### Visualizing Complex Structures
 
-```sql
--- Parallel branches
-SELECT durable.explain($$
-    durable.join(
-        'SELECT 1' |=> 'a',
-        'SELECT 2' |=> 'b'
-    )
-    ~> 'SELECT $a + $b'
-$$);
+**ETL Pipeline with Parallel Validation:**
 
--- Loop with conditional
+```sql
+SELECT durable.explain($$
+    'SELECT * FROM staging WHERE status = ''pending'' LIMIT 1' |=> 'record'
+    ~> durable.if(
+        'SELECT $record IS NOT NULL',
+        'UPDATE staging SET status = ''validating'' WHERE id = $record.id'
+            ~> durable.join(
+                'SELECT validate_schema($record.data)' |=> 'schema_ok',
+                'SELECT validate_rules($record.data)' |=> 'rules_ok'
+            )
+            ~> durable.if(
+                'SELECT $schema_ok AND $rules_ok',
+                'INSERT INTO target SELECT * FROM staging WHERE id = $record.id'
+                    ~> 'UPDATE staging SET status = ''loaded'' WHERE id = $record.id',
+                'UPDATE staging SET status = ''failed'' WHERE id = $record.id'
+            ),
+        'SELECT ''no pending records'''
+    )
+$$);
+```
+
+Output:
+```
+SQL |=> 'record': SELECT * FROM staging WHERE status = 'pending' LIMIT 1
+→ IF
+    ✓ then:
+      SQL: UPDATE staging SET status = 'validating' WHERE id = $record.id
+      → JOIN (2)
+          ║ branch 1:
+            SQL |=> 'schema_ok': SELECT validate_schema($record.data)
+          ║ branch 2:
+            SQL |=> 'rules_ok': SELECT validate_rules($record.data)
+      → IF
+          ✓ then:
+            SQL: INSERT INTO target SELECT * FROM staging WHERE id = $record.id
+            → SQL: UPDATE staging SET status = 'loaded' WHERE id = $record.id
+          ✗ else:
+            SQL: UPDATE staging SET status = 'failed' WHERE id = $record.id
+    ✗ else:
+      SQL: SELECT 'no pending records'
+```
+
+**Cron Job with Cleanup Loop:**
+
+```sql
 SELECT durable.explain($$
     durable.loop(
-        'SELECT COUNT(*) FROM tasks WHERE status = ''pending''' |=> 'cnt'
+        durable.wait_for_schedule('0 * * * *')
+        ~> 'DELETE FROM logs WHERE created_at < now() - interval ''7 days''' |=> 'deleted'
         ~> durable.if(
-            'SELECT $cnt > 0',
-            'UPDATE tasks SET status = ''done'' WHERE id = 1',
-            durable.sleep(60)
+            'SELECT $deleted > 0',
+            'INSERT INTO audit (action, count) VALUES (''cleanup'', $deleted)',
+            'SELECT ''nothing to clean'''
         )
     )
 $$);
+```
+
+Output:
+```
+LOOP
+    ↻ body:
+      WAIT_SCHEDULE '0 * * * *'
+      → SQL |=> 'deleted': DELETE FROM logs WHERE created_at < now() - interval '7 days'
+      → IF
+          ✓ then:
+            SQL: INSERT INTO audit (action, count) VALUES ('cleanup', $deleted)
+          ✗ else:
+            SQL: SELECT 'nothing to clean'
 ```
 
 ---
