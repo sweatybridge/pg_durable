@@ -167,7 +167,7 @@ async fn run_duroxide_runtime_with_shutdown() {
                 ctx.trace_info(format!("Loading orchestration graph for instance: {}", instance_id));
                 
                 let instance_query = format!(
-                    "SELECT root_node::text FROM durable.instances WHERE id = '{}'",
+                    "SELECT root_node FROM durable.instances WHERE id = '{}'",
                     instance_id
                 );
                 
@@ -180,8 +180,8 @@ async fn run_duroxide_runtime_with_shutdown() {
                 };
                 
                 let nodes_query = format!(
-                    r#"SELECT id::text, node_type, query, result_name, 
-                       left_node::text, right_node::text
+                    r#"SELECT id, node_type, query, result_name, 
+                       left_node, right_node
                     FROM durable.nodes WHERE instance_id = '{}'"#,
                     instance_id
                 );

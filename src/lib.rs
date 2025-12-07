@@ -41,13 +41,13 @@ extension_sql!(
     r#"
 -- Table to store orchestration nodes (SQL steps, THEN chains, etc.)
 CREATE TABLE IF NOT EXISTS durable.nodes (
-    id UUID PRIMARY KEY,
+    id VARCHAR(8) PRIMARY KEY,
     instance_id VARCHAR(8),
     node_type TEXT NOT NULL,
     query TEXT,
     result_name TEXT,
-    left_node UUID,
-    right_node UUID,
+    left_node VARCHAR(8),
+    right_node VARCHAR(8),
     status TEXT DEFAULT 'pending',
     result JSONB,
     error TEXT,
@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS durable.nodes (
 CREATE TABLE IF NOT EXISTS durable.instances (
     id VARCHAR(8) PRIMARY KEY,
     label TEXT,
-    root_node UUID NOT NULL,
+    root_node VARCHAR(8) NOT NULL,
     status TEXT DEFAULT 'pending',
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now(),

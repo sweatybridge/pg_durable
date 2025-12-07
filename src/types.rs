@@ -245,11 +245,11 @@ impl Durofut {
             .unwrap_or_else(|| "NULL".to_string());
         
         let left_node = self.left_node.as_ref()
-            .map(|id| format!("'{}'::uuid", id))
+            .map(|id| format!("'{}'", id))
             .unwrap_or_else(|| "NULL".to_string());
         
         let right_node = self.right_node.as_ref()
-            .map(|id| format!("'{}'::uuid", id))
+            .map(|id| format!("'{}'", id))
             .unwrap_or_else(|| "NULL".to_string());
 
         let sql = format!(

@@ -1,7 +1,6 @@
 //! DSL functions for defining durable orchestrations
 
 use pgrx::prelude::*;
-use uuid::Uuid;
 use cron::Schedule as CronSchedule;
 use std::str::FromStr;
 
@@ -36,7 +35,7 @@ pub fn debug_db_path() -> String {
 #[pg_extern(schema = "durable")]
 pub fn sql(query: &str) -> String {
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "SQL".to_string(),
         left_node: None,
         right_node: None,
@@ -55,7 +54,7 @@ pub fn then_fn(a: &str, b: &str) -> String {
     let b_fut = Durofut::from_json(b);
     
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "THEN".to_string(),
         left_node: Some(a_fut.node_id),
         right_node: Some(b_fut.node_id),
@@ -74,7 +73,7 @@ pub fn as_named(name: &str, fut: &str) -> String {
     durofut.result_name = Some(name.to_string());
     
     let update_sql = format!(
-        "UPDATE durable.nodes SET result_name = '{}' WHERE id = '{}'::uuid",
+        "UPDATE durable.nodes SET result_name = '{}' WHERE id = '{}'",
         name.replace('\'', "''"),
         durofut.node_id
     );
@@ -90,7 +89,7 @@ pub fn sleep(seconds: i64) -> String {
         pgrx::error!("Sleep duration must be non-negative");
     }
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "SLEEP".to_string(),
         left_node: None,
         right_node: None,
@@ -110,7 +109,7 @@ pub fn wait_for_schedule(cron_expr: &str) -> String {
     }
     
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "WAIT_SCHEDULE".to_string(),
         left_node: None,
         right_node: None,
@@ -127,7 +126,7 @@ pub fn loop_fn(body: &str) -> String {
     let body_fut = Durofut::from_json(body);
     
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "LOOP".to_string(),
         left_node: Some(body_fut.node_id),
         right_node: None,
@@ -150,7 +149,7 @@ pub fn if_fn(condition: &str, then_branch: &str, else_branch: &str) -> String {
     });
     
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "IF".to_string(),
         left_node: Some(then_fut.node_id),
         right_node: Some(else_fut.node_id),
@@ -168,7 +167,7 @@ pub fn join(a: &str, b: &str) -> String {
     let b_fut = Durofut::from_json(b);
     
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "JOIN".to_string(),
         left_node: Some(a_fut.node_id),
         right_node: Some(b_fut.node_id),
@@ -191,7 +190,7 @@ pub fn join3(a: &str, b: &str, c: &str) -> String {
     });
     
     let durofut = Durofut {
-        node_id: Uuid::new_v4().to_string(),
+        node_id: short_id(),
         node_type: "JOIN".to_string(),
         left_node: Some(a_fut.node_id),
         right_node: Some(b_fut.node_id),
@@ -217,7 +216,7 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
         .unwrap_or_else(|| "NULL".to_string());
     
     let create_instance_sql = format!(
-        "INSERT INTO durable.instances (id, label, root_node, status) VALUES ('{}', {}, '{}'::uuid, 'pending')",
+        "INSERT INTO durable.instances (id, label, root_node, status) VALUES ('{}', {}, '{}', 'pending')",
         instance_id,
         label_sql,
         durofut.node_id
@@ -235,22 +234,22 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
         visited.insert(node_id.to_string());
         
         let update_sql = format!(
-            "UPDATE durable.nodes SET instance_id = '{}' WHERE id = '{}'::uuid",
+            "UPDATE durable.nodes SET instance_id = '{}' WHERE id = '{}'",
             instance_id, node_id
         );
         let _ = Spi::run(&update_sql);
         
         // Get child node IDs
         let left: Option<String> = Spi::get_one(&format!(
-            "SELECT left_node::text FROM durable.nodes WHERE id = '{}'::uuid", node_id
+            "SELECT left_node FROM durable.nodes WHERE id = '{}'", node_id
         )).ok().flatten();
         
         let right: Option<String> = Spi::get_one(&format!(
-            "SELECT right_node::text FROM durable.nodes WHERE id = '{}'::uuid", node_id
+            "SELECT right_node FROM durable.nodes WHERE id = '{}'", node_id
         )).ok().flatten();
         
         let config: Option<String> = Spi::get_one(&format!(
-            "SELECT query FROM durable.nodes WHERE id = '{}'::uuid", node_id
+            "SELECT query FROM durable.nodes WHERE id = '{}'", node_id
         )).ok().flatten();
         
         if let Some(l) = left {

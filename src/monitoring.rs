@@ -260,7 +260,7 @@ pub fn instance_nodes(
     let node_defs: Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<TimestampWithTimeZone>)> = 
         Spi::connect(|client| {
             let sql = format!(
-                r#"SELECT id::text, node_type, query, result_name, left_node::text, right_node::text, status, result::text, updated_at
+                r#"SELECT id, node_type, query, result_name, left_node, right_node, status, result::text, updated_at
                    FROM durable.nodes WHERE instance_id = '{}'"#,
                 instance_id
             );
