@@ -6,8 +6,8 @@
 set +e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-SQL_DIR="$SCRIPT_DIR/sql"
+PROJECT_DIR="$SCRIPT_DIR"
+SQL_DIR="$SCRIPT_DIR/tests/e2e/sql"
 
 IMAGE_NAME="pg_durable:e2e-test"
 CONTAINER_NAME="pg_durable_e2e_$$"
