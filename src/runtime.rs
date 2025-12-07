@@ -194,7 +194,7 @@ async fn run_duroxide_runtime_with_shutdown() {
                     Err(e) => return Err(format!("Failed to load function nodes: {}", e)),
                 };
                 
-                let mut nodes = std::collections::HashMap::new();
+                let mut nodes = std::collections::BTreeMap::new();
                 for row in rows {
                     let id: String = row.get("id");
                     let node = FunctionNode {

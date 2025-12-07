@@ -156,11 +156,12 @@ pub struct FunctionNode {
 }
 
 /// Represents the entire function graph for an instance
+/// Note: Uses BTreeMap for deterministic serialization order (required for Duroxide replay)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionGraph {
     pub instance_id: String,
     pub root_node_id: String,
-    pub nodes: std::collections::HashMap<String, FunctionNode>,
+    pub nodes: std::collections::BTreeMap<String, FunctionNode>,
 }
 
 /// Input structure passed to duroxide functions
