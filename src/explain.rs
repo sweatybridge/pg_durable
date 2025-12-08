@@ -23,14 +23,14 @@ struct ExplainNode {
 /// Usage:
 /// ```sql
 /// -- Explain existing instance
-/// SELECT durable.explain('abc12345');
+/// SELECT df.explain('abc12345');
 /// 
 /// -- Explain a DSL expression (dry-run, no execution)
-/// SELECT durable.explain($$
-///     durable.sql('SELECT 1') ~> durable.sleep(60) ~> durable.sql('SELECT 2')
+/// SELECT df.explain($$
+///     df.sql('SELECT 1') ~> df.sleep(60) ~> df.sql('SELECT 2')
 /// $$);
 /// ```
-#[pg_extern(schema = "durable")]
+#[pg_extern(schema = "df")]
 pub fn explain(input: &str) -> String {
     let trimmed = input.trim();
     
@@ -50,7 +50,7 @@ fn explain_instance(instance_id: &str) -> String {
     // Get instance info from PostgreSQL
     let instance_info: Option<(String, Option<String>, String)> = Spi::connect(|client| {
         let sql = format!(
-            "SELECT root_node, label, status FROM durable.instances WHERE id = '{}'",
+            "SELECT root_node, label, status FROM df.instances WHERE id = '{}'",
             instance_id.replace('\'', "''")
         );
         if let Ok(table) = client.select(&sql, None, &[]) {
@@ -75,7 +75,7 @@ fn explain_instance(instance_id: &str) -> String {
     let (duroxide_status, output) = get_duroxide_instance_info(instance_id);
     
     // Load all nodes for this instance
-    let nodes = load_nodes_from_table("durable.nodes", Some(instance_id));
+    let nodes = load_nodes_from_table("df.nodes", Some(instance_id));
     
     if nodes.is_empty() {
         return format!("No nodes found for instance '{}'", instance_id);
@@ -176,13 +176,13 @@ fn explain_expression(expr: &str) -> String {
     let _ = Spi::run("TRUNCATE _durable_explain_nodes");
     
     // 2. Set explain mode flag
-    let _ = Spi::run("SET LOCAL durable._explain_mode = 'true'");
+    let _ = Spi::run("SET LOCAL df._explain_mode = 'true'");
     
     // 3. Execute the expression to populate temp table
     let durofut_json: Result<Option<String>, _> = Spi::get_one(&format!("SELECT {}", expr));
     
     // 4. Reset explain mode
-    let _ = Spi::run("RESET durable._explain_mode");
+    let _ = Spi::run("RESET df._explain_mode");
     
     let root_json = match durofut_json {
         Ok(Some(json)) => json,

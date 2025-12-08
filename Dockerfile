@@ -70,9 +70,4 @@ RUN mkdir -p /docker-entrypoint-initdb.d && \
 # Configure shared_preload_libraries for background worker
 RUN echo "shared_preload_libraries = 'pg_durable'" >> /usr/share/postgresql/postgresql.conf.sample
 
-# Set writable path for duroxide SQLite store and pre-create the file
-ENV PG_DURABLE_STORE_PATH=/tmp/pg_durable_duroxide.db
-RUN touch /tmp/pg_durable_duroxide.db && chmod 666 /tmp/pg_durable_duroxide.db
-
 EXPOSE 5432
-

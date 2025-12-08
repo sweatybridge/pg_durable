@@ -9,7 +9,7 @@ UPDATE playground.staging SET processed_at = NULL WHERE source_id >= 1001;
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
 -- ETL Pipeline: cleanup old data, mark staging records, load to target
-INSERT INTO _test_state SELECT durable.start(
+INSERT INTO _test_state SELECT df.start(
     'DELETE FROM playground.target 
      WHERE loaded_at < now() - interval ''1 day'''                    -- cleanup old
     ~> 'UPDATE playground.staging 
@@ -32,7 +32,7 @@ BEGIN
     RAISE NOTICE 'Testing ETL pipeline: %', inst_id;
     
     LOOP
-        SELECT s INTO status FROM durable.status(inst_id) s;
+        SELECT s INTO status FROM df.status(inst_id) s;
         EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;

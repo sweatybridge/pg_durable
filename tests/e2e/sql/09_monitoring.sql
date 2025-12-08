@@ -3,7 +3,7 @@
 
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
-INSERT INTO _test_state SELECT durable.start('SELECT 123', 'test-monitoring-label');
+INSERT INTO _test_state SELECT df.start('SELECT 123', 'test-monitoring-label');
 
 DO $$
 DECLARE
@@ -18,7 +18,7 @@ BEGIN
     RAISE NOTICE 'Testing instance: %', inst_id;
     
     LOOP
-        SELECT s INTO status FROM durable.status(inst_id) s;
+        SELECT s INTO status FROM df.status(inst_id) s;
         EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;
@@ -26,7 +26,7 @@ BEGIN
     
     -- Test list_instances
     SELECT EXISTS (
-        SELECT 1 FROM durable.list_instances() 
+        SELECT 1 FROM df.list_instances() 
         WHERE list_instances.instance_id = inst_id
     ) INTO found;
     
@@ -35,7 +35,7 @@ BEGIN
     END IF;
     
     -- Test instance_info
-    SELECT i.status INTO info_status FROM durable.instance_info(inst_id) i;
+    SELECT i.status INTO info_status FROM df.instance_info(inst_id) i;
     IF info_status IS NULL THEN
         RAISE EXCEPTION 'TEST FAILED: instance_info returned NULL status';
     END IF;
@@ -46,7 +46,7 @@ BEGIN
     END IF;
     
     -- Test result
-    SELECT r INTO result FROM durable.result(inst_id) r;
+    SELECT r INTO result FROM df.result(inst_id) r;
     IF result NOT LIKE '%123%' THEN
         RAISE EXCEPTION 'TEST FAILED: result should contain 123, got %', result;
     END IF;

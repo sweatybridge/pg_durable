@@ -36,16 +36,17 @@ pg_durable enables you to define and execute **durable SQL functions** entirely 
 
 | Feature | Description |
 |---------|-------------|
-| **SQL DSL** | Define functions using plain SQL strings with `~>`, `\|=>` operators |
+| **SQL DSL** | Define functions using plain SQL strings with intuitive operators |
 | **Sequential Execution** | Chain steps with `~>` operator |
-| **Parallel Execution** | Run steps concurrently with `durable.join()` |
-| **Conditional Logic** | Branch with `durable.if()` |
-| **Timers & Delays** | Sleep with `durable.sleep()` |
-| **Cron Scheduling** | Schedule with `durable.wait_for_schedule()` |
-| **Eternal Loops** | Create forever-running jobs with `durable.loop()` |
+| **Parallel Execution** | Run steps concurrently with `&` operator or `df.join()` |
+| **Race Execution** | First to complete wins with `\|` operator or `df.race()` |
+| **Conditional Logic** | Branch with `?>` `!>` operators or `df.if()` |
+| **Timers & Delays** | Sleep with `df.sleep()` |
+| **Cron Scheduling** | Schedule with `df.wait_for_schedule()` |
+| **Eternal Loops** | Create forever-running jobs with `@>` operator or `df.loop()` |
 | **Variable Substitution** | Pass results between steps using `$name` |
 | **Labels** | Tag functions with friendly names |
-| **Visualization** | Preview function structure with `durable.explain()` |
+| **Visualization** | Preview function structure with `df.explain()` |
 | **Monitoring** | Query function status, history, and metrics |
 
 ---
@@ -62,7 +63,7 @@ CREATE EXTENSION pg_durable;
 
 ```sql
 -- Execute a simple SQL query as a durable function
-SELECT durable.start('SELECT ''Hello, durable world!''');
+SELECT df.start('SELECT ''Hello, durable world!''');
 -- Returns: a1b2c3d4 (8-character instance ID)
 ```
 
@@ -70,10 +71,10 @@ SELECT durable.start('SELECT ''Hello, durable world!''');
 
 ```sql
 -- List all functions
-SELECT * FROM durable.list_instances();
+SELECT * FROM df.list_instances();
 
 -- Get result of a specific instance
-SELECT durable.result('a1b2c3d4');
+SELECT df.result('a1b2c3d4');
 ```
 
 ---
@@ -103,9 +104,9 @@ SELECT durable.result('a1b2c3d4');
 ### Instance IDs
 
 Every durable function gets a unique 8-character hex ID (e.g., `a1b2c3d4`). Use this ID to:
-- Check status: `SELECT durable.status('a1b2c3d4')`
-- Get result: `SELECT durable.result('a1b2c3d4')`
-- Cancel: `SELECT durable.cancel('a1b2c3d4')`
+- Check status: `SELECT df.status('a1b2c3d4')`
+- Get result: `SELECT df.result('a1b2c3d4')`
+- Cancel: `SELECT df.cancel('a1b2c3d4')`
 
 ### Durability
 
@@ -120,29 +121,30 @@ Functions are persisted to disk. If PostgreSQL crashes:
 
 ### Auto-Wrap SQL
 
-Plain SQL strings are automatically wrapped - no need for explicit `durable.sql()` calls:
+Plain SQL strings are automatically wrapped - no need for explicit `df.sql()` calls:
 
 ```sql
 -- These are equivalent:
 'SELECT 1' ~> 'SELECT 2'
-durable.sql('SELECT 1') ~> durable.sql('SELECT 2')
+df.sql('SELECT 1') ~> df.sql('SELECT 2')
 ```
 
 ### Functions
 
 | Function | Description | Example |
 |----------|-------------|---------|
-| `durable.sleep(seconds)` | Pause for N seconds | `durable.sleep(60)` |
-| `durable.wait_for_schedule(cron)` | Wait until cron matches | `durable.wait_for_schedule('0 * * * *')` |
-| `durable.join(a, b)` | Execute in parallel | `durable.join('SELECT 1', 'SELECT 2')` |
-| `durable.join3(a, b, c)` | Three in parallel | `durable.join3(a, b, c)` |
-| `durable.if(cond, then, else)` | Conditional branch | `durable.if('SELECT true', a, b)` |
-| `durable.loop(body)` | Repeat forever | `durable.loop(body)` |
-| `durable.start(func, label)` | Start function | `durable.start('SELECT 1', 'job')` |
-| `durable.cancel(id, reason)` | Cancel function | `durable.cancel('a1b2c3d4', 'Done')` |
-| `durable.status(id)` | Get status | `durable.status('a1b2c3d4')` |
-| `durable.result(id)` | Get result | `durable.result('a1b2c3d4')` |
-| `durable.explain(input)` | Visualize graph | `durable.explain('a1b2c3d4')` |
+| `df.sleep(seconds)` | Pause for N seconds | `df.sleep(60)` |
+| `df.wait_for_schedule(cron)` | Wait until cron matches | `df.wait_for_schedule('0 * * * *')` |
+| `df.join(a, b)` | Execute in parallel, wait for all | `df.join('SELECT 1', 'SELECT 2')` |
+| `df.join3(a, b, c)` | Three in parallel | `df.join3(a, b, c)` |
+| `df.race(a, b)` | Execute in parallel, first wins | `df.race(fast_query, slow_query)` |
+| `df.if(cond, then, else)` | Conditional branch | `df.if('SELECT true', a, b)` |
+| `df.loop(body)` | Repeat forever | `df.loop(body)` |
+| `df.start(func, label)` | Start function | `df.start('SELECT 1', 'job')` |
+| `df.cancel(id, reason)` | Cancel function | `df.cancel('a1b2c3d4', 'Done')` |
+| `df.status(id)` | Get status | `df.status('a1b2c3d4')` |
+| `df.result(id)` | Get result | `df.result('a1b2c3d4')` |
+| `df.explain(input)` | Visualize graph | `df.explain('a1b2c3d4')` |
 
 ### Operators
 
@@ -150,13 +152,43 @@ durable.sql('SELECT 1') ~> durable.sql('SELECT 2')
 |----------|------|-------------|---------|
 | `~>` | Sequence | Run left, then right | `'SELECT 1' ~> 'SELECT 2'` |
 | `\|=>` | Name | Name result for later use | `'SELECT 1' \|=> 'myvar'` |
+| `&` | Join | Run in parallel, wait for all | `'SELECT 1' & 'SELECT 2'` |
+| `\|` | Race | Run in parallel, first wins | `fast_query \| slow_query` |
+| `?>` | If-Then | Conditional then branch | `cond ?> then_branch` |
+| `!>` | Else | Conditional else branch | `cond ?> then !> else` |
+| `@>` | Loop | Repeat forever (prefix) | `@> body` |
+
+### Operator Examples
+
+```sql
+-- Join: run both in parallel, wait for all
+SELECT df.start('SELECT 1' & 'SELECT 2');
+
+-- Race: run both, first to complete wins
+SELECT df.start(
+    'SELECT quick_result()' | df.sleep(30)  -- timeout after 30s
+);
+
+-- If-then-else with operators
+SELECT df.start(
+    'SELECT count(*) > 10 FROM orders' 
+        ?> 'SELECT ''high volume'''
+        !> 'SELECT ''low volume'''
+);
+
+-- Loop with operator (prefix)
+SELECT df.start(
+    @> ('INSERT INTO heartbeats (ts) VALUES (now())' ~> df.sleep(60)),
+    'heartbeat-job'
+);
+```
 
 ### Variable Substitution
 
 Use `$name` to reference named results in subsequent steps:
 
 ```sql
-SELECT durable.start(
+SELECT df.start(
     'SELECT 100 as amount' |=> 'total'        -- save result as $total
     ~> 'SELECT $total * 2 as doubled'         -- use $total in next step
 );
@@ -190,7 +222,7 @@ SELECT durable.start(
 ### 1. Simple Query
 
 ```sql
-SELECT durable.start(
+SELECT df.start(
     'SELECT COUNT(*) FROM playground.users WHERE active = true',
     'count-active-users'
 );
@@ -199,7 +231,7 @@ SELECT durable.start(
 ### 2. Sequential Steps
 
 ```sql
-SELECT durable.start(
+SELECT df.start(
     'INSERT INTO playground.logs (msg) VALUES (''Step 1: Starting'')'
     ~> 'INSERT INTO playground.logs (msg) VALUES (''Step 2: Processing'')'
     ~> 'INSERT INTO playground.logs (msg) VALUES (''Step 3: Complete'')',
@@ -210,7 +242,7 @@ SELECT durable.start(
 ### 3. Multi-Step ETL
 
 ```sql
-SELECT durable.start(
+SELECT df.start(
     'DELETE FROM playground.target 
      WHERE loaded_at < now() - interval ''1 day'''                    -- cleanup
     ~> 'UPDATE playground.staging 
@@ -225,12 +257,12 @@ SELECT durable.start(
 ### 4. With Variables
 
 ```sql
-SELECT durable.start(
+SELECT df.start(
     'SELECT id FROM playground.orders 
      WHERE status = ''pending'' LIMIT 1' |=> 'order_id'               -- get order
     ~> 'UPDATE playground.orders 
         SET status = ''processing'' WHERE id = $order_id'             -- mark processing
-    ~> durable.sleep(2)                                               -- simulate work
+    ~> df.sleep(2)                                               -- simulate work
     ~> 'UPDATE playground.orders 
         SET status = ''completed'', processed_at = now() 
         WHERE id = $order_id',                                        -- complete
@@ -241,37 +273,52 @@ SELECT durable.start(
 ### 5. Parallel Execution
 
 ```sql
-SELECT durable.start(
-    durable.join(
-        'SELECT COUNT(*) as user_count FROM playground.users',        -- branch 1
-        'SELECT COUNT(*) as order_count FROM playground.orders'       -- branch 2
-    )                                                                 -- waits for both
+-- Using & operator (preferred)
+SELECT df.start(
+    'SELECT COUNT(*) as user_count FROM playground.users'             -- branch 1
+    & 'SELECT COUNT(*) as order_count FROM playground.orders'         -- branch 2
     ~> 'INSERT INTO playground.logs (msg) 
         VALUES (''Parallel counts complete'')',
     'parallel-counts'
+);
+
+-- Or using df.join() function
+SELECT df.start(
+    df.join(
+        'SELECT COUNT(*) as user_count FROM playground.users',
+        'SELECT COUNT(*) as order_count FROM playground.orders'
+    )
+    ~> 'INSERT INTO playground.logs (msg) VALUES (''Done'')',
+    'parallel-counts-func'
 );
 ```
 
 ### 6. Conditional Logic
 
 ```sql
-SELECT durable.start(
-    durable.if(
-        'SELECT COUNT(*) > 3 FROM playground.task_queue 
-         WHERE status = ''pending''',                                 -- condition
-        'INSERT INTO playground.logs (msg, level) 
-         VALUES (''High task load!'', ''warning'')',                  -- then
-        'INSERT INTO playground.logs (msg) 
-         VALUES (''Task queue normal'')'                              -- else
-    ),
+-- Using ?> !> operators (preferred)
+SELECT df.start(
+    'SELECT COUNT(*) > 3 FROM playground.task_queue WHERE status = ''pending'''
+        ?> 'INSERT INTO playground.logs (msg, level) VALUES (''High load!'', ''warning'')'
+        !> 'INSERT INTO playground.logs (msg) VALUES (''Queue normal'')',
     'check-task-load'
+);
+
+-- Or using df.if() function
+SELECT df.start(
+    df.if(
+        'SELECT COUNT(*) > 3 FROM playground.task_queue WHERE status = ''pending''',
+        'INSERT INTO playground.logs (msg, level) VALUES (''High load!'', ''warning'')',
+        'INSERT INTO playground.logs (msg) VALUES (''Queue normal'')'
+    ),
+    'check-task-load-func'
 );
 ```
 
 ### 7. Task Queue Processor
 
 ```sql
-SELECT durable.start(
+SELECT df.start(
     'UPDATE playground.task_queue 
      SET status = ''processing'', started_at = now()
      WHERE id = (
@@ -282,7 +329,7 @@ SELECT durable.start(
          FOR UPDATE SKIP LOCKED
      )
      RETURNING id, payload' |=> 'task'                                -- claim task
-    ~> durable.sleep(1)                                               -- process
+    ~> df.sleep(1)                                               -- process
     ~> 'UPDATE playground.task_queue 
         SET status = ''completed'', completed_at = now()
         WHERE status = ''processing''',                               -- complete
@@ -296,50 +343,53 @@ SELECT durable.start(
 
 ### Eternal Loops
 
-Use `durable.loop()` to create functions that run forever. Each iteration creates a new execution with fresh state (via continue-as-new).
+Use `@>` operator or `df.loop()` to create functions that run forever. Each iteration creates a new execution with fresh state (via continue-as-new).
 
 ```sql
--- Simple heartbeat every 30 seconds
-SELECT durable.start(
-    durable.loop(
-        'INSERT INTO playground.heartbeats (ts) VALUES (now())'
-        ~> durable.sleep(30)
-    ),
+-- Simple heartbeat every 30 seconds (using @> operator)
+SELECT df.start(
+    @> ('INSERT INTO playground.heartbeats (ts) VALUES (now())' ~> df.sleep(30)),
     'heartbeat-30s'
+);
+
+-- Same using df.loop() function
+SELECT df.start(
+    df.loop(
+        'INSERT INTO playground.heartbeats (ts) VALUES (now())' ~> df.sleep(30)
+    ),
+    'heartbeat-30s-func'
 );
 ```
 
 ### Cron-Style Scheduling
 
-Use `durable.wait_for_schedule()` with a cron expression:
+Use `df.wait_for_schedule()` with a cron expression:
 
 ```sql
 -- Every minute: log a tick
-SELECT durable.start(
-    durable.loop(
-        durable.wait_for_schedule('* * * * *')
-        ~> 'INSERT INTO playground.logs (msg) 
-            VALUES (''Minute tick: '' || now()::text)'
+SELECT df.start(
+    @> (
+        df.wait_for_schedule('* * * * *')
+        ~> 'INSERT INTO playground.logs (msg) VALUES (''Minute tick: '' || now()::text)'
     ),
     'every-minute-tick'
 );
 
 -- Every 5 minutes: check for pending tasks
-SELECT durable.start(
-    durable.loop(
-        durable.wait_for_schedule('*/5 * * * *')
+SELECT df.start(
+    @> (
+        df.wait_for_schedule('*/5 * * * *')
         ~> 'SELECT COUNT(*) as pending FROM playground.task_queue 
             WHERE status = ''pending''' |=> 'count'
-        ~> 'INSERT INTO playground.logs (msg) 
-            VALUES (''Pending tasks: '' || $count)'
+        ~> 'INSERT INTO playground.logs (msg) VALUES (''Pending tasks: '' || $count)'
     ),
     'task-monitor-5min'
 );
 
 -- Hourly: clean up old logs
-SELECT durable.start(
-    durable.loop(
-        durable.wait_for_schedule('0 * * * *')
+SELECT df.start(
+    @> (
+        df.wait_for_schedule('0 * * * *')
         ~> 'DELETE FROM playground.logs 
             WHERE created_at < now() - interval ''24 hours'''
     ),
@@ -347,11 +397,10 @@ SELECT durable.start(
 );
 
 -- Daily at midnight: archive completed orders
-SELECT durable.start(
-    durable.loop(
-        durable.wait_for_schedule('0 0 * * *')
-        ~> 'UPDATE playground.orders 
-            SET status = ''archived'' 
+SELECT df.start(
+    @> (
+        df.wait_for_schedule('0 0 * * *')
+        ~> 'UPDATE playground.orders SET status = ''archived'' 
             WHERE status = ''completed'' 
             AND processed_at < now() - interval ''7 days'''
     ),
@@ -359,9 +408,9 @@ SELECT durable.start(
 );
 
 -- Weekdays at 9am: generate report
-SELECT durable.start(
-    durable.loop(
-        durable.wait_for_schedule('0 9 * * 1-5')
+SELECT df.start(
+    @> (
+        df.wait_for_schedule('0 9 * * 1-5')
         ~> 'SELECT playground.generate_report(''daily_summary'')'
     ),
     'weekday-morning-report'
@@ -372,26 +421,26 @@ SELECT durable.start(
 
 ```sql
 -- Cancel by instance ID
-SELECT durable.cancel('a1b2c3d4', 'Manual stop');
+SELECT df.cancel('a1b2c3d4', 'Manual stop');
 
 -- Find by label first, then cancel
-SELECT instance_id FROM durable.list_instances() WHERE label = 'every-minute-tick';
+SELECT instance_id FROM df.list_instances() WHERE label = 'every-minute-tick';
 -- Then cancel with the found ID
-SELECT durable.cancel('found_id', 'Stopping cron job');
+SELECT df.cancel('found_id', 'Stopping cron job');
 ```
 
 ---
 
 ## Visualizing Functions
 
-### durable.explain()
+### df.explain()
 
-Use `durable.explain()` to visualize function structure. It works in two modes:
+Use `df.explain()` to visualize function structure. It works in two modes:
 
 **1. Live Instance** - Pass an instance ID to see execution status:
 
 ```sql
-SELECT durable.explain('a1b2c3d4');
+SELECT df.explain('a1b2c3d4');
 ```
 
 Output shows status markers for each node:
@@ -408,10 +457,10 @@ SQL |=> 'step1': SELECT 1                    ✓ Completed
 **2. Dry-Run Preview** - Pass a DSL expression to visualize without executing:
 
 ```sql
-SELECT durable.explain($$
+SELECT df.explain($$
     'SELECT 1' |=> 'a'
     ~> 'SELECT 2' |=> 'b'
-    ~> durable.if(
+    ~> df.if(
         'SELECT $a > 0',
         'SELECT ''yes''',
         'SELECT ''no'''
@@ -444,16 +493,16 @@ SQL |=> 'a': SELECT 1
 **ETL Pipeline with Parallel Validation:**
 
 ```sql
-SELECT durable.explain($$
+SELECT df.explain($$
     'SELECT * FROM staging WHERE status = ''pending'' LIMIT 1' |=> 'record'
-    ~> durable.if(
+    ~> df.if(
         'SELECT $record IS NOT NULL',
         'UPDATE staging SET status = ''validating'' WHERE id = $record.id'
-            ~> durable.join(
+            ~> df.join(
                 'SELECT validate_schema($record.data)' |=> 'schema_ok',
                 'SELECT validate_rules($record.data)' |=> 'rules_ok'
             )
-            ~> durable.if(
+            ~> df.if(
                 'SELECT $schema_ok AND $rules_ok',
                 'INSERT INTO target SELECT * FROM staging WHERE id = $record.id'
                     ~> 'UPDATE staging SET status = ''loaded'' WHERE id = $record.id',
@@ -488,11 +537,11 @@ SQL |=> 'record': SELECT * FROM staging WHERE status = 'pending' LIMIT 1
 **Cron Job with Cleanup Loop:**
 
 ```sql
-SELECT durable.explain($$
-    durable.loop(
-        durable.wait_for_schedule('0 * * * *')
+SELECT df.explain($$
+    df.loop(
+        df.wait_for_schedule('0 * * * *')
         ~> 'DELETE FROM logs WHERE created_at < now() - interval ''7 days''' |=> 'deleted'
-        ~> durable.if(
+        ~> df.if(
             'SELECT $deleted > 0',
             'INSERT INTO audit (action, count) VALUES (''cleanup'', $deleted)',
             'SELECT ''nothing to clean'''
@@ -518,13 +567,13 @@ LOOP
 
 ```sql
 -- Visualize the daily-order-archive function before starting it
-SELECT durable.explain($$
-    durable.loop(
-        durable.wait_for_schedule('0 0 * * *')
+SELECT df.explain($$
+    df.loop(
+        df.wait_for_schedule('0 0 * * *')
         ~> 'SELECT COUNT(*) as cnt FROM playground.orders 
             WHERE status = ''completed'' 
             AND processed_at < now() - interval ''7 days''' |=> 'to_archive'
-        ~> durable.if(
+        ~> df.if(
             'SELECT $to_archive > 0',
             'UPDATE playground.orders SET status = ''archived'' 
              WHERE status = ''completed'' 
@@ -560,15 +609,15 @@ LOOP
 
 ```sql
 -- All instances
-SELECT * FROM durable.list_instances();
+SELECT * FROM df.list_instances();
 
 -- Filter by status
-SELECT * FROM durable.list_instances('Running');
-SELECT * FROM durable.list_instances('Completed');
-SELECT * FROM durable.list_instances('Failed');
+SELECT * FROM df.list_instances('Running');
+SELECT * FROM df.list_instances('Completed');
+SELECT * FROM df.list_instances('Failed');
 
 -- With limit
-SELECT * FROM durable.list_instances(NULL, 10);
+SELECT * FROM df.list_instances(NULL, 10);
 ```
 
 **Columns:** `instance_id`, `label`, `function_name`, `status`, `execution_count`, `output`
@@ -576,7 +625,7 @@ SELECT * FROM durable.list_instances(NULL, 10);
 ### Instance Details
 
 ```sql
-SELECT * FROM durable.instance_info('a1b2c3d4');
+SELECT * FROM df.instance_info('a1b2c3d4');
 ```
 
 **Columns:** `instance_id`, `label`, `function_name`, `function_version`, `current_execution_id`, `status`, `output`
@@ -587,10 +636,10 @@ For loops and retried functions, see the execution history:
 
 ```sql
 -- Last 5 executions (default)
-SELECT * FROM durable.instance_executions('a1b2c3d4');
+SELECT * FROM df.instance_executions('a1b2c3d4');
 
 -- Last 20 executions
-SELECT * FROM durable.instance_executions('a1b2c3d4', 20);
+SELECT * FROM df.instance_executions('a1b2c3d4', 20);
 ```
 
 **Columns:** `execution_id`, `status`, `event_count`, `duration_ms`, `output`
@@ -601,10 +650,10 @@ See the function graph structure:
 
 ```sql
 -- Last 5 executions (default)
-SELECT * FROM durable.instance_nodes('a1b2c3d4');
+SELECT * FROM df.instance_nodes('a1b2c3d4');
 
 -- Last 10 executions
-SELECT * FROM durable.instance_nodes('a1b2c3d4', 10);
+SELECT * FROM df.instance_nodes('a1b2c3d4', 10);
 ```
 
 **Columns:** `execution_id`, `node_id`, `node_type`, `query`, `result_name`, `left_node`, `right_node`, `status`, `result`
@@ -612,7 +661,7 @@ SELECT * FROM durable.instance_nodes('a1b2c3d4', 10);
 ### System Metrics
 
 ```sql
-SELECT * FROM durable.metrics();
+SELECT * FROM df.metrics();
 ```
 
 **Columns:** `total_instances`, `running_instances`, `completed_instances`, `failed_instances`, `total_executions`, `total_events`
@@ -621,10 +670,10 @@ SELECT * FROM durable.metrics();
 
 ```sql
 -- Status only
-SELECT durable.status('a1b2c3d4');
+SELECT df.status('a1b2c3d4');
 
 -- Result only
-SELECT durable.result('a1b2c3d4');
+SELECT df.result('a1b2c3d4');
 ```
 
 ---
@@ -633,45 +682,46 @@ SELECT durable.result('a1b2c3d4');
 
 ```sql
 -- Start a durable function (plain SQL auto-wrapped)
-SELECT durable.start('SELECT 1', 'optional-label');
+SELECT df.start('SELECT 1', 'optional-label');
 
 -- Chain steps with ~>
-SELECT durable.start(
-    'SELECT 1' ~> 'SELECT 2' ~> 'SELECT 3'
-);
+SELECT df.start('SELECT 1' ~> 'SELECT 2' ~> 'SELECT 3');
 
 -- Name a result with |=>
-SELECT durable.start(
-    'SELECT 1' |=> 'myvar' ~> 'SELECT $myvar * 2'
-);
+SELECT df.start('SELECT 1' |=> 'myvar' ~> 'SELECT $myvar * 2');
 
--- Sleep
-durable.sleep(60)                             -- 60 seconds
+-- Parallel join (& operator or df.join)
+SELECT df.start('SELECT 1' & 'SELECT 2');         -- operator
+SELECT df.start(df.join('SELECT 1', 'SELECT 2')); -- function
 
--- Cron schedule  
-durable.wait_for_schedule('*/5 * * * *')      -- every 5 min
+-- Race (| operator or df.race) - first wins
+SELECT df.start('fast_query' | df.sleep(30));     -- operator
+SELECT df.start(df.race(fast, slow));             -- function
 
--- Parallel execution
-durable.join('SELECT 1', 'SELECT 2')
+-- Conditional (?> !> operators or df.if)
+SELECT df.start('SELECT true' ?> 'yes' !> 'no');  -- operator
+SELECT df.start(df.if('SELECT true', 'yes', 'no')); -- function
 
--- Conditional
-durable.if('SELECT true', 'yes branch', 'no branch')
+-- Loop forever (@> operator or df.loop)
+SELECT df.start(@> (body ~> df.sleep(60)));       -- operator
+SELECT df.start(df.loop(body ~> df.sleep(60)));   -- function
 
--- Loop forever
-durable.loop(body)
+-- Timers
+df.sleep(60)                             -- 60 seconds
+df.wait_for_schedule('*/5 * * * *')      -- every 5 min
 
 -- Visualize
-SELECT durable.explain('instance_id');        -- live instance
-SELECT durable.explain($$ 'a' ~> 'b' $$);     -- dry-run preview
+SELECT df.explain('instance_id');        -- live instance
+SELECT df.explain($$ 'a' ~> 'b' $$);     -- dry-run preview
 
 -- Monitor
-SELECT * FROM durable.list_instances();
-SELECT * FROM durable.instance_info('id');
-SELECT durable.status('id');
-SELECT durable.result('id');
+SELECT * FROM df.list_instances();
+SELECT * FROM df.instance_info('id');
+SELECT df.status('id');
+SELECT df.result('id');
 
 -- Cancel
-SELECT durable.cancel('id', 'reason');
+SELECT df.cancel('id', 'reason');
 ```
 
 ---

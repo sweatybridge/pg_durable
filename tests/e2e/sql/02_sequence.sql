@@ -1,5 +1,5 @@
 -- Test: Sequential execution
--- Tests both ~> operator and durable.seq() function
+-- Tests both ~> operator and df.seq() function
 -- Expected: Steps execute in order 1, 2, 3
 
 DROP TABLE IF EXISTS test_sequence_log;
@@ -8,17 +8,17 @@ CREATE TABLE test_sequence_log (id SERIAL, step INT, variant TEXT, ts TIMESTAMP 
 CREATE TEMP TABLE _test_state (instance_id TEXT, variant TEXT);
 
 -- Variant A: Using ~> operator
-INSERT INTO _test_state SELECT durable.start(
+INSERT INTO _test_state SELECT df.start(
     'INSERT INTO test_sequence_log (step, variant) VALUES (1, ''op'')'
     ~> 'INSERT INTO test_sequence_log (step, variant) VALUES (2, ''op'')'
     ~> 'INSERT INTO test_sequence_log (step, variant) VALUES (3, ''op'')',
     'test-sequence-op'
 ), 'operator';
 
--- Variant B: Using durable.seq() function
-INSERT INTO _test_state SELECT durable.start(
-    durable.seq(
-        durable.seq(
+-- Variant B: Using df.seq() function
+INSERT INTO _test_state SELECT df.start(
+    df.seq(
+        df.seq(
             'INSERT INTO test_sequence_log (step, variant) VALUES (1, ''fn'')',
             'INSERT INTO test_sequence_log (step, variant) VALUES (2, ''fn'')'
         ),
@@ -39,7 +39,7 @@ BEGIN
         attempts := 0;
         
         LOOP
-            SELECT s INTO status FROM durable.status(rec.instance_id) s;
+            SELECT s INTO status FROM df.status(rec.instance_id) s;
             EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
             PERFORM pg_sleep(0.1);
             attempts := attempts + 1;

@@ -12,7 +12,7 @@ use duroxide_pg::PostgresProvider;
 // ============================================================================
 
 /// List all durable function instances, optionally filtered by status.
-#[pg_extern(schema = "durable")]
+#[pg_extern(schema = "df")]
 pub fn list_instances(
     status_filter: default!(Option<&str>, "NULL"),
     limit_count: default!(i32, "100")
@@ -29,7 +29,7 @@ pub fn list_instances(
     // Fetch labels from PostgreSQL
     let labels: std::collections::HashMap<String, Option<String>> = Spi::connect(|client| {
         let mut map = std::collections::HashMap::new();
-        if let Ok(table) = client.select("SELECT id, label FROM durable.instances", None, &[]) {
+        if let Ok(table) = client.select("SELECT id, label FROM df.instances", None, &[]) {
             for row in table {
                 if let Ok(Some(id)) = row.get::<String>(1) {
                     let label: Option<String> = row.get(2).ok().flatten();
@@ -84,7 +84,7 @@ pub fn list_instances(
 }
 
 /// Get detailed info about a specific durable function instance.
-#[pg_extern(schema = "durable")]
+#[pg_extern(schema = "df")]
 pub fn instance_info(instance_id: &str) -> TableIterator<'static, (
     name!(instance_id, String),
     name!(label, Option<String>),
@@ -98,7 +98,7 @@ pub fn instance_info(instance_id: &str) -> TableIterator<'static, (
     let instance_id_str = instance_id.to_string();
     
     let label: Option<String> = Spi::get_one(&format!(
-        "SELECT label FROM durable.instances WHERE id = '{}'",
+        "SELECT label FROM df.instances WHERE id = '{}'",
         instance_id.replace('\'', "''")
     )).ok().flatten();
     
@@ -135,7 +135,7 @@ pub fn instance_info(instance_id: &str) -> TableIterator<'static, (
 }
 
 /// Get the last N executions for an eternal durable function (loop).
-#[pg_extern(schema = "durable")]
+#[pg_extern(schema = "df")]
 pub fn instance_executions(instance_id: &str, limit_count: default!(i32, "5")) -> TableIterator<'static, (
     name!(execution_id, i64),
     name!(status, String),
@@ -193,7 +193,7 @@ pub fn instance_executions(instance_id: &str, limit_count: default!(i32, "5")) -
 }
 
 /// Get system-wide durable function metrics.
-#[pg_extern(schema = "durable")]
+#[pg_extern(schema = "df")]
 pub fn metrics() -> TableIterator<'static, (
     name!(total_instances, i64),
     name!(running_instances, i64),
@@ -236,7 +236,7 @@ pub fn metrics() -> TableIterator<'static, (
 }
 
 /// Get function nodes for an instance with execution history.
-#[pg_extern(schema = "durable")]
+#[pg_extern(schema = "df")]
 pub fn instance_nodes(
     instance_id_param: &str,
     last_n_executions: default!(i32, "5")
@@ -262,7 +262,7 @@ pub fn instance_nodes(
         Spi::connect(|client| {
             let sql = format!(
                 r#"SELECT id, node_type, query, result_name, left_node, right_node, status, result::text, updated_at
-                   FROM durable.nodes WHERE instance_id = '{}'"#,
+                   FROM df.nodes WHERE instance_id = '{}'"#,
                 instance_id
             );
             let mut nodes = Vec::new();

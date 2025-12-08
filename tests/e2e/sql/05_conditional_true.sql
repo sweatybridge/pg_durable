@@ -1,5 +1,5 @@
 -- Test: Conditional execution - true branch
--- Tests both auto-wrapped SQL and explicit durable.sql() variants
+-- Tests df.if() function and ?> !> operators
 -- Expected: Then branch executes when condition is true
 
 DROP TABLE IF EXISTS test_cond_log;
@@ -7,25 +7,23 @@ CREATE TABLE test_cond_log (id SERIAL, branch TEXT, variant TEXT);
 
 CREATE TEMP TABLE _test_state (instance_id TEXT, variant TEXT);
 
--- Variant A: Auto-wrapped SQL strings
-INSERT INTO _test_state SELECT durable.start(
-    durable.if(
+-- Variant A: df.if() function
+INSERT INTO _test_state SELECT df.start(
+    df.if(
         'SELECT true',
-        'INSERT INTO test_cond_log (branch, variant) VALUES (''then'', ''auto'')',
-        'INSERT INTO test_cond_log (branch, variant) VALUES (''else'', ''auto'')'
-    ),
-    'test-cond-true-auto'
-), 'auto';
-
--- Variant B: Explicit durable.sql() wrapping
-INSERT INTO _test_state SELECT durable.start(
-    durable.if(
-        durable.sql('SELECT true'),
-        durable.sql('INSERT INTO test_cond_log (branch, variant) VALUES (''then'', ''func'')'),
-        durable.sql('INSERT INTO test_cond_log (branch, variant) VALUES (''else'', ''func'')')
+        'INSERT INTO test_cond_log (branch, variant) VALUES (''then'', ''func'')',
+        'INSERT INTO test_cond_log (branch, variant) VALUES (''else'', ''func'')'
     ),
     'test-cond-true-func'
 ), 'func';
+
+-- Variant B: ?> !> operators
+INSERT INTO _test_state SELECT df.start(
+    'SELECT true' 
+        ?> 'INSERT INTO test_cond_log (branch, variant) VALUES (''then'', ''op'')'
+        !> 'INSERT INTO test_cond_log (branch, variant) VALUES (''else'', ''op'')',
+    'test-cond-true-op'
+), 'op';
 
 DO $$
 DECLARE
@@ -39,7 +37,7 @@ BEGIN
         attempts := 0;
         
         LOOP
-            SELECT s INTO status FROM durable.status(rec.instance_id) s;
+            SELECT s INTO status FROM df.status(rec.instance_id) s;
             EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
             PERFORM pg_sleep(0.1);
             attempts := attempts + 1;
@@ -59,7 +57,7 @@ BEGIN
         RAISE NOTICE 'PASSED: conditional_true [%]', rec.variant;
     END LOOP;
     
-    RAISE NOTICE 'TEST PASSED: conditional_true (both variants)';
+    RAISE NOTICE 'TEST PASSED: conditional_true (func + ?> !> operators)';
 END $$;
 
 DROP TABLE _test_state;

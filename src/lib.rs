@@ -30,9 +30,9 @@ pub extern "C-unwind" fn _PG_init() {
 // Schema Declaration
 // ============================================================================
 
-/// The 'durable' schema contains all pg_durable functions
+/// The 'df' schema contains all pg_durable functions (df = durable functions)
 #[pg_schema]
-mod durable {}
+mod df {}
 
 // ============================================================================
 // Table Definitions
@@ -41,7 +41,7 @@ mod durable {}
 extension_sql!(
     r#"
 -- Table to store function nodes (SQL steps, THEN chains, etc.)
-CREATE TABLE IF NOT EXISTS durable.nodes (
+CREATE TABLE IF NOT EXISTS df.nodes (
     id VARCHAR(8) PRIMARY KEY,
     instance_id VARCHAR(8),
     node_type TEXT NOT NULL,
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS durable.nodes (
 );
 
 -- Table to store function instances
-CREATE TABLE IF NOT EXISTS durable.instances (
+CREATE TABLE IF NOT EXISTS df.instances (
     id VARCHAR(8) PRIMARY KEY,
     label TEXT,
     root_node VARCHAR(8) NOT NULL,
@@ -68,13 +68,13 @@ CREATE TABLE IF NOT EXISTS durable.instances (
 );
 
 -- Index for finding pending instances
-CREATE INDEX IF NOT EXISTS idx_instances_status ON durable.instances(status);
+CREATE INDEX IF NOT EXISTS idx_instances_status ON df.instances(status);
 
 -- Index for finding nodes by instance
-CREATE INDEX IF NOT EXISTS idx_nodes_instance ON durable.nodes(instance_id);
+CREATE INDEX IF NOT EXISTS idx_nodes_instance ON df.nodes(instance_id);
 "#,
     name = "create_tables",
-    requires = [durable]
+    requires = [df]
 );
 
 // ============================================================================
@@ -85,24 +85,127 @@ extension_sql!(
     r#"
 -- Operator ~> for sequencing: a ~> b means "run a, then run b"
 CREATE OPERATOR ~> (
-    FUNCTION = durable.seq,
+    FUNCTION = df.seq,
     LEFTARG = text,
     RIGHTARG = text
 );
 
 -- Operator |=> for naming: fut |=> 'name' means "name this result as $name"
-CREATE OR REPLACE FUNCTION durable.as_op(fut text, name text) RETURNS text AS $$
-    SELECT durable.as(name, fut);
+CREATE OR REPLACE FUNCTION df.as_op(fut text, name text) RETURNS text AS $$
+    SELECT df.as(name, fut);
 $$ LANGUAGE SQL IMMUTABLE;
 
 CREATE OPERATOR |=> (
-    FUNCTION = durable.as_op,
+    FUNCTION = df.as_op,
     LEFTARG = text,
+    RIGHTARG = text
+);
+
+-- Operator & for parallel join: a & b means "run a and b in parallel, wait for both"
+CREATE OPERATOR & (
+    FUNCTION = df.join,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+
+-- Operator | for race: a | b means "run a and b in parallel, first wins"
+CREATE OPERATOR | (
+    FUNCTION = df.race,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+
+-- Operators ?> and !> for if-then-else: cond ?> then_branch !> else_branch
+-- We need helper functions to build the if node incrementally
+
+-- Helper: cond ?> then creates a partial if (stores condition and then branch)
+CREATE OR REPLACE FUNCTION df.if_then_op(condition text, then_branch text) RETURNS text AS $$
+DECLARE
+    cond_fut jsonb;
+    then_fut jsonb;
+    result_obj jsonb;
+BEGIN
+    -- Ensure both are durofuts
+    cond_fut := df.ensure_durofut(condition)::jsonb;
+    then_fut := df.ensure_durofut(then_branch)::jsonb;
+    
+    -- Return a special marker object for the partial if
+    result_obj := jsonb_build_object(
+        '_partial_if', true,
+        'condition', cond_fut,
+        'then_branch', then_fut
+    );
+    RETURN result_obj::text;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Helper: partial_if !> else completes the if node
+CREATE OR REPLACE FUNCTION df.if_else_op(partial_if text, else_branch text) RETURNS text AS $$
+DECLARE
+    partial jsonb;
+    else_fut text;
+    cond_text text;
+    then_text text;
+BEGIN
+    partial := partial_if::jsonb;
+    
+    -- Check if it's a partial if
+    IF partial->>'_partial_if' IS NULL THEN
+        RAISE EXCEPTION 'Invalid if-then-else: left side of !> must be a ?> expression';
+    END IF;
+    
+    cond_text := partial->'condition'::text;
+    then_text := partial->'then_branch'::text;
+    else_fut := df.ensure_durofut(else_branch);
+    
+    -- Now call the real df.if function
+    RETURN df.if(cond_text, then_text, else_fut);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- Helper to ensure a value is a durofut (returns JSON string)
+CREATE OR REPLACE FUNCTION df.ensure_durofut(val text) RETURNS text AS $$
+BEGIN
+    -- Try to parse as JSON to check if it's already a durofut
+    BEGIN
+        IF (val::jsonb)->>'node_id' IS NOT NULL THEN
+            RETURN val;
+        END IF;
+    EXCEPTION WHEN OTHERS THEN
+        -- Not valid JSON, treat as SQL
+        NULL;
+    END;
+    
+    -- It's plain SQL, wrap it
+    RETURN df.sql(val);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OPERATOR ?> (
+    FUNCTION = df.if_then_op,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+
+CREATE OPERATOR !> (
+    FUNCTION = df.if_else_op,
+    LEFTARG = text,
+    RIGHTARG = text
+);
+
+-- Operator @> for loop: @> body means "repeat body forever"
+-- This is a PREFIX operator with lowest precedence
+CREATE OR REPLACE FUNCTION df.loop_prefix_op(body text) RETURNS text AS $$
+    SELECT df.loop(body);
+$$ LANGUAGE SQL IMMUTABLE;
+
+CREATE OPERATOR @> (
+    FUNCTION = df.loop_prefix_op,
     RIGHTARG = text
 );
 "#,
     name = "create_operators",
-    requires = [dsl::then_fn, dsl::as_named]
+    requires = [dsl::then_fn, dsl::as_named, dsl::join, dsl::race, dsl::if_fn, dsl::loop_fn]
 );
 
 // ============================================================================
@@ -331,7 +434,7 @@ mod tests {
         let fut = crate::dsl::sql("SELECT 42");
         let instance_id = crate::dsl::start(&fut, Some("test-instance-row"));
         let count = Spi::get_one::<i64>(&format!(
-            "SELECT COUNT(*) FROM durable.instances WHERE id = '{}'", instance_id
+            "SELECT COUNT(*) FROM df.instances WHERE id = '{}'", instance_id
         )).unwrap().unwrap();
         assert_eq!(count, 1);
     }
@@ -351,7 +454,7 @@ mod tests {
     #[pg_test]
     fn test_seq_operator_via_sql() {
         let result = Spi::get_one::<String>(
-            "SELECT durable.sql('SELECT 1') ~> durable.sql('SELECT 2')"
+            "SELECT df.sql('SELECT 1') ~> df.sql('SELECT 2')"
         ).unwrap().unwrap();
         let fut = Durofut::from_json(&result);
         assert_eq!(fut.node_type, "THEN");
@@ -360,7 +463,7 @@ mod tests {
     #[pg_test]
     fn test_as_operator_via_sql() {
         let result = Spi::get_one::<String>(
-            "SELECT durable.sql('SELECT 1') |=> 'my_name'"
+            "SELECT df.sql('SELECT 1') |=> 'my_name'"
         ).unwrap().unwrap();
         let fut = Durofut::from_json(&result);
         assert_eq!(fut.result_name, Some("my_name".to_string()));
@@ -401,7 +504,7 @@ mod tests {
     #[pg_test]
     fn test_explain_expression_simple_sql() {
         // Dry-run explain of a simple SQL
-        let result = crate::explain::explain("durable.sql('SELECT 42')");
+        let result = crate::explain::explain("df.sql('SELECT 42')");
         assert!(result.contains("SQL"), "Expected SQL in output: {}", result);
         assert!(result.contains("42"), "Expected query content: {}", result);
     }
@@ -410,7 +513,7 @@ mod tests {
     fn test_explain_expression_sequence() {
         // Dry-run explain of a sequence
         let result = crate::explain::explain(
-            "durable.sql('SELECT 1') ~> durable.sql('SELECT 2')"
+            "df.sql('SELECT 1') ~> df.sql('SELECT 2')"
         );
         // Should show sequence with arrows
         assert!(result.contains("SELECT 1"), "Expected first query: {}", result);
@@ -419,7 +522,7 @@ mod tests {
 
     #[pg_test]
     fn test_explain_expression_sleep() {
-        let result = crate::explain::explain("durable.sleep(60)");
+        let result = crate::explain::explain("df.sleep(60)");
         assert!(result.contains("SLEEP"), "Expected SLEEP node: {}", result);
         assert!(result.contains("60"), "Expected duration: {}", result);
     }
@@ -427,7 +530,7 @@ mod tests {
     #[pg_test]
     fn test_explain_expression_loop() {
         let result = crate::explain::explain(
-            "durable.loop(durable.sql('SELECT 1'))"
+            "df.loop(df.sql('SELECT 1'))"
         );
         assert!(result.contains("LOOP"), "Expected LOOP: {}", result);
         assert!(result.contains("body"), "Expected body section: {}", result);
@@ -436,7 +539,7 @@ mod tests {
     #[pg_test]
     fn test_explain_expression_if() {
         let result = crate::explain::explain(
-            "durable.if(durable.sql('SELECT true'), durable.sql('SELECT yes'), durable.sql('SELECT no'))"
+            "df.if(df.sql('SELECT true'), df.sql('SELECT yes'), df.sql('SELECT no'))"
         );
         assert!(result.contains("IF"), "Expected IF: {}", result);
         assert!(result.contains("then"), "Expected then branch: {}", result);
@@ -446,7 +549,7 @@ mod tests {
     #[pg_test]
     fn test_explain_expression_join() {
         let result = crate::explain::explain(
-            "durable.join(durable.sql('SELECT 1'), durable.sql('SELECT 2'))"
+            "df.join(df.sql('SELECT 1'), df.sql('SELECT 2'))"
         );
         assert!(result.contains("JOIN"), "Expected JOIN: {}", result);
         assert!(result.contains("branch"), "Expected branches: {}", result);
@@ -454,22 +557,22 @@ mod tests {
 
     #[pg_test]
     fn test_explain_no_side_effects() {
-        // After explain, no orphan nodes should exist in durable.nodes
+        // After explain, no orphan nodes should exist in df.nodes
         let before_count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM durable.nodes WHERE instance_id IS NULL"
+            "SELECT COUNT(*) FROM df.nodes WHERE instance_id IS NULL"
         ).unwrap().unwrap_or(0);
         
         let _ = crate::explain::explain(
-            "durable.sql('SELECT orphan_test') ~> durable.sleep(999)"
+            "df.sql('SELECT orphan_test') ~> df.sleep(999)"
         );
         
         let after_count: i64 = Spi::get_one(
-            "SELECT COUNT(*) FROM durable.nodes WHERE instance_id IS NULL"
+            "SELECT COUNT(*) FROM df.nodes WHERE instance_id IS NULL"
         ).unwrap().unwrap_or(0);
         
         // Should be the same - no orphan nodes added
         assert_eq!(before_count, after_count, 
-            "Explain should not leave orphan nodes in durable.nodes");
+            "Explain should not leave orphan nodes in df.nodes");
     }
 
     #[pg_test]
@@ -483,7 +586,7 @@ mod tests {
     fn test_explain_complex_nested() {
         // Complex nested structure: loop with if inside
         let result = crate::explain::explain(
-            "durable.loop(durable.if(durable.sql('SELECT true'), durable.sql('SELECT yes'), durable.sql('SELECT no')))"
+            "df.loop(df.if(df.sql('SELECT true'), df.sql('SELECT yes'), df.sql('SELECT no')))"
         );
         assert!(result.contains("LOOP"), "Expected LOOP: {}", result);
         assert!(result.contains("IF"), "Expected IF: {}", result);
@@ -506,7 +609,7 @@ mod tests {
 
     #[pg_test]
     fn test_autowrap_sequence_mixed() {
-        // Mix of explicit durable.sql() and plain SQL
+        // Mix of explicit df.sql() and plain SQL
         let explicit = crate::dsl::sql("SELECT 1");
         let result = crate::dsl::then_fn(&explicit, "SELECT 2");
         let fut = Durofut::from_json(&result);
@@ -558,7 +661,7 @@ mod tests {
         
         // Verify instance was created
         let count = Spi::get_one::<i64>(&format!(
-            "SELECT COUNT(*) FROM durable.instances WHERE id = '{}'", instance_id
+            "SELECT COUNT(*) FROM df.instances WHERE id = '{}'", instance_id
         )).unwrap().unwrap();
         assert_eq!(count, 1);
     }
@@ -859,7 +962,7 @@ mod tests {
         let _ = wait_for_completion(&id2, 10);
         
         // Query list_instances
-        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM durable.list_instances()").unwrap().unwrap_or(0);
+        let count = Spi::get_one::<i64>("SELECT COUNT(*) FROM df.list_instances()").unwrap().unwrap_or(0);
         assert!(count >= 2, "Expected at least 2 instances, got {}", count);
     }
 
@@ -867,7 +970,7 @@ mod tests {
     #[ignore = "pgrx doesn't support shared_preload_libraries"]
     fn test_e2e_metrics() {
         // Just verify the function works
-        let total = Spi::get_one::<i64>("SELECT total_instances FROM durable.metrics()");
+        let total = Spi::get_one::<i64>("SELECT total_instances FROM df.metrics()");
         assert!(total.is_ok(), "metrics() should be callable");
     }
 
@@ -881,7 +984,7 @@ mod tests {
         
         // Query instance_info
         let orch_name = Spi::get_one::<String>(&format!(
-            "SELECT function_name FROM durable.instance_info('{}')", instance_id
+            "SELECT function_name FROM df.instance_info('{}')", instance_id
         ));
         
         assert!(orch_name.is_ok(), "instance_info should be callable");
@@ -903,7 +1006,7 @@ mod tests {
         
         // Query instance_nodes - should have 3 nodes (2 SQL + 1 THEN)
         let node_count = Spi::get_one::<i64>(&format!(
-            "SELECT COUNT(DISTINCT node_id) FROM durable.instance_nodes('{}')", instance_id
+            "SELECT COUNT(DISTINCT node_id) FROM df.instance_nodes('{}')", instance_id
         )).unwrap().unwrap_or(0);
         
         assert!(node_count >= 3, "Expected at least 3 nodes, got {}", node_count);
@@ -936,7 +1039,7 @@ mod tests {
         
         // Check PostgreSQL table status
         let pg_status = Spi::get_one::<String>(&format!(
-            "SELECT status FROM durable.instances WHERE id = '{}'", instance_id
+            "SELECT status FROM df.instances WHERE id = '{}'", instance_id
         )).unwrap();
         
         assert_eq!(pg_status, Some("completed".to_string()), 

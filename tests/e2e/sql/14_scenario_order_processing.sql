@@ -8,12 +8,12 @@ UPDATE playground.orders SET status = 'pending', processed_at = NULL WHERE id = 
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
 -- Order Processing: get pending order, mark processing, complete
-INSERT INTO _test_state SELECT durable.start(
+INSERT INTO _test_state SELECT df.start(
     'SELECT id FROM playground.orders 
      WHERE status = ''pending'' LIMIT 1' |=> 'order_id'               -- get order id
     ~> 'UPDATE playground.orders 
         SET status = ''processing'' WHERE id = $order_id'             -- mark processing
-    ~> durable.sleep(1)                                               -- simulate work
+    ~> df.sleep(1)                                               -- simulate work
     ~> 'UPDATE playground.orders 
         SET status = ''completed'', processed_at = now() 
         WHERE id = $order_id',                                        -- complete
@@ -31,7 +31,7 @@ BEGIN
     RAISE NOTICE 'Testing order processing: %', inst_id;
     
     LOOP
-        SELECT s INTO inst_status FROM durable.status(inst_id) s;
+        SELECT s INTO inst_status FROM df.status(inst_id) s;
         EXIT WHEN lower(inst_status) IN ('completed', 'failed', 'canceled') OR attempts > 500;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;

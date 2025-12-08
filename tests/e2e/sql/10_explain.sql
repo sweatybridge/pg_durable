@@ -6,7 +6,7 @@ DO $body$
 DECLARE
     explain_output TEXT;
 BEGIN
-    SELECT durable.explain($$ 'SELECT 1' ~> 'SELECT 2' $$) INTO explain_output;
+    SELECT df.explain($$ 'SELECT 1' ~> 'SELECT 2' $$) INTO explain_output;
     
     IF explain_output IS NULL OR explain_output = '' THEN
         RAISE EXCEPTION 'TEST FAILED: explain returned empty output';
@@ -22,7 +22,7 @@ END $body$;
 -- Test live instance explain
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
-INSERT INTO _test_state SELECT durable.start('SELECT 1' ~> 'SELECT 2', 'test-explain');
+INSERT INTO _test_state SELECT df.start('SELECT 1' ~> 'SELECT 2', 'test-explain');
 
 DO $$
 DECLARE
@@ -35,13 +35,13 @@ BEGIN
     RAISE NOTICE 'Testing instance: %', inst_id;
     
     LOOP
-        SELECT s INTO status FROM durable.status(inst_id) s;
+        SELECT s INTO status FROM df.status(inst_id) s;
         EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;
     END LOOP;
     
-    SELECT durable.explain(inst_id) INTO explain_output;
+    SELECT df.explain(inst_id) INTO explain_output;
     
     IF explain_output IS NULL OR explain_output = '' THEN
         RAISE EXCEPTION 'TEST FAILED: explain returned empty output for live instance';

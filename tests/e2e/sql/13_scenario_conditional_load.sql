@@ -11,8 +11,8 @@ UPDATE playground.task_queue SET status = 'pending' WHERE id <= 4;
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
 -- Conditional: Check task queue load and log appropriate message
-INSERT INTO _test_state SELECT durable.start(
-    durable.if(
+INSERT INTO _test_state SELECT df.start(
+    df.if(
         'SELECT COUNT(*) > 3 FROM playground.task_queue 
          WHERE status = ''pending''',                                 -- condition: > 3 pending?
         'INSERT INTO playground.logs (msg, level) 
@@ -40,7 +40,7 @@ BEGIN
     RAISE NOTICE 'Pending tasks: %', pending_count;
     
     LOOP
-        SELECT s INTO inst_status FROM durable.status(inst_id) s;
+        SELECT s INTO inst_status FROM df.status(inst_id) s;
         EXIT WHEN lower(inst_status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;

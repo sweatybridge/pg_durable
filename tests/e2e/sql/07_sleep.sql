@@ -8,8 +8,8 @@ INSERT INTO test_sleep_log DEFAULT VALUES;
 
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
-INSERT INTO _test_state SELECT durable.start(
-    durable.sleep(2) ~> 'INSERT INTO test_sleep_log DEFAULT VALUES',
+INSERT INTO _test_state SELECT df.start(
+    df.sleep(2) ~> 'INSERT INTO test_sleep_log DEFAULT VALUES',
     'test-sleep'
 );
 
@@ -25,7 +25,7 @@ BEGIN
     RAISE NOTICE 'Testing instance: %', inst_id;
     
     LOOP
-        SELECT s INTO status FROM durable.status(inst_id) s;
+        SELECT s INTO status FROM df.status(inst_id) s;
         EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 500;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;

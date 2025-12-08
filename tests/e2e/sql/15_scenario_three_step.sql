@@ -8,7 +8,7 @@ DELETE FROM playground.logs WHERE msg LIKE 'Step %';
 CREATE TEMP TABLE _test_state (instance_id TEXT);
 
 -- Three sequential steps
-INSERT INTO _test_state SELECT durable.start(
+INSERT INTO _test_state SELECT df.start(
     'INSERT INTO playground.logs (msg) VALUES (''Step 1: Starting'')'
     ~> 'INSERT INTO playground.logs (msg) VALUES (''Step 2: Processing'')'
     ~> 'INSERT INTO playground.logs (msg) VALUES (''Step 3: Complete'')',
@@ -26,7 +26,7 @@ BEGIN
     RAISE NOTICE 'Testing three-step workflow: %', inst_id;
     
     LOOP
-        SELECT s INTO status FROM durable.status(inst_id) s;
+        SELECT s INTO status FROM df.status(inst_id) s;
         EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
         PERFORM pg_sleep(0.1);
         attempts := attempts + 1;

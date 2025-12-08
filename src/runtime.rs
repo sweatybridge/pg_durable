@@ -167,7 +167,7 @@ async fn run_duroxide_runtime_with_shutdown() {
                 ctx.trace_info(format!("Loading function graph for instance: {}", instance_id));
                 
                 let instance_query = format!(
-                    "SELECT root_node FROM durable.instances WHERE id = '{}'",
+                    "SELECT root_node FROM df.instances WHERE id = '{}'",
                     instance_id
                 );
                 
@@ -182,7 +182,7 @@ async fn run_duroxide_runtime_with_shutdown() {
                 let nodes_query = format!(
                     r#"SELECT id, node_type, query, result_name, 
                        left_node, right_node
-                    FROM durable.nodes WHERE instance_id = '{}'"#,
+                    FROM df.nodes WHERE instance_id = '{}'"#,
                     instance_id
                 );
                 
@@ -233,12 +233,12 @@ async fn run_duroxide_runtime_with_shutdown() {
                 
                 let update_query = if status == "completed" {
                     format!(
-                        "UPDATE durable.instances SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = '{}'",
+                        "UPDATE df.instances SET status = 'completed', completed_at = now(), updated_at = now() WHERE id = '{}'",
                         instance_id
                     )
                 } else {
                     format!(
-                        "UPDATE durable.instances SET status = '{}', updated_at = now() WHERE id = '{}'",
+                        "UPDATE df.instances SET status = '{}', updated_at = now() WHERE id = '{}'",
                         status, instance_id
                     )
                 };
@@ -270,12 +270,12 @@ async fn run_duroxide_runtime_with_shutdown() {
                     // Escape single quotes in result for SQL
                     let escaped_result = res.replace('\'', "''");
                     format!(
-                        "UPDATE durable.nodes SET status = '{}', result = '{}', updated_at = now() WHERE id = '{}'",
+                        "UPDATE df.nodes SET status = '{}', result = '{}', updated_at = now() WHERE id = '{}'",
                         status, escaped_result, node_id
                     )
                 } else {
                     format!(
-                        "UPDATE durable.nodes SET status = '{}', updated_at = now() WHERE id = '{}'",
+                        "UPDATE df.nodes SET status = '{}', updated_at = now() WHERE id = '{}'",
                         status, node_id
                     )
                 };
@@ -376,6 +376,8 @@ async fn run_duroxide_runtime_with_shutdown() {
     
     log!("pg_durable: duroxide runtime started, processing durable functions...");
     
+    // Create a client for starting orchestrations
+    // Keep runtime alive until shutdown signal
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         
@@ -572,8 +574,10 @@ async fn execute_node_inner(
                 "results": results_json
             }).to_string();
             
+            // Build list of branch inputs
             let mut branch_inputs = vec![left_input, right_input];
             
+            // Check for extra nodes (join3)
             if let Some(config_str) = &node.query {
                 if let Ok(config) = serde_json::from_str::<serde_json::Value>(config_str) {
                     if let Some(extra_nodes) = config["extra_nodes"].as_array() {
@@ -591,25 +595,85 @@ async fn execute_node_inner(
                 }
             }
             
-            let mut join_handles = Vec::new();
+            // Schedule sub-orchestrations and collect DurableFutures
+            let mut durable_futures = Vec::new();
             for input in branch_inputs {
-                let fut = ctx.schedule_sub_orchestration("ExecuteSubtree", input)
-                    .into_sub_orchestration();
-                join_handles.push(fut);
+                let fut = ctx.schedule_sub_orchestration("ExecuteSubtree", input);
+                durable_futures.push(fut);
             }
             
-            let results_vec = futures::future::join_all(join_handles).await;
+            // Use ctx.join() - Duroxide's proper join method for parallel execution
+            let results_vec = ctx.join(durable_futures).await;
             
+            // Process results - DurableOutput is an enum wrapping the result
             let mut join_results = Vec::new();
-            for result in results_vec {
+            for (i, result) in results_vec.into_iter().enumerate() {
                 match result {
-                    Ok(r) => join_results.push(r),
-                    Err(e) => return Err(format!("JOIN branch failed: {}", e)),
+                    duroxide::DurableOutput::SubOrchestration(Ok(r)) => join_results.push(r),
+                    duroxide::DurableOutput::SubOrchestration(Err(e)) => {
+                        return Err(format!("JOIN branch {} failed: {}", i + 1, e));
+                    }
+                    duroxide::DurableOutput::Activity(Ok(r)) => join_results.push(r),
+                    duroxide::DurableOutput::Activity(Err(e)) => {
+                        return Err(format!("JOIN branch {} failed: {}", i + 1, e));
+                    }
+                    _ => return Err(format!("JOIN branch {} returned unexpected type", i + 1)),
                 }
             }
             
             ctx.trace_info(format!("JOIN completed with {} results", join_results.len()));
             Ok(serde_json::to_string(&join_results).unwrap_or_else(|_| "[]".to_string()))
+        }
+        "race" => {
+            let left_id = node.left_node.as_ref()
+                .ok_or_else(|| format!("RACE node {} has no left branch", node_id))?;
+            let right_id = node.right_node.as_ref()
+                .ok_or_else(|| format!("RACE node {} has no right branch", node_id))?;
+            
+            ctx.trace_info("Executing RACE branches in parallel (first wins)");
+            
+            let graph_json = serde_json::to_string(&graph)
+                .map_err(|e| format!("Failed to serialize graph: {}", e))?;
+            let results_json = serde_json::to_string(&results)
+                .map_err(|e| format!("Failed to serialize results: {}", e))?;
+            
+            let left_input = serde_json::json!({
+                "graph": graph_json,
+                "node_id": left_id,
+                "results": results_json
+            }).to_string();
+            
+            let right_input = serde_json::json!({
+                "graph": graph_json,
+                "node_id": right_id,
+                "results": results_json
+            }).to_string();
+            
+            // Schedule sub-orchestrations
+            let left_fut = ctx.schedule_sub_orchestration("ExecuteSubtree", left_input);
+            let right_fut = ctx.schedule_sub_orchestration("ExecuteSubtree", right_input);
+            
+            // Use ctx.select2() - first to complete wins
+            // select2 returns (usize, DurableOutput) where usize is the winning branch index
+            let (_winner_idx, output) = ctx.select2(left_fut, right_fut).await;
+            
+            match output {
+                duroxide::DurableOutput::SubOrchestration(Ok(r)) => {
+                    ctx.trace_info("RACE completed - first result received");
+                    Ok(r)
+                }
+                duroxide::DurableOutput::SubOrchestration(Err(e)) => {
+                    Err(format!("RACE failed: {}", e))
+                }
+                duroxide::DurableOutput::Activity(Ok(r)) => {
+                    ctx.trace_info("RACE completed - first result received");
+                    Ok(r)
+                }
+                duroxide::DurableOutput::Activity(Err(e)) => {
+                    Err(format!("RACE failed: {}", e))
+                }
+                _ => Err("RACE returned unexpected type".to_string()),
+            }
         }
         other => {
             Err(format!("Unknown node type: {}", other))

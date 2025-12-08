@@ -4,6 +4,8 @@
 
 We're using `duroxide-pg` as the storage backend for an orchestration system. When executing orchestrations with parallel branches (e.g., joining multiple sub-orchestrations), a deadlock occurs in the `fetch_orchestration_item` function when multiple workers attempt to acquire locks on the `instance_locks` table simultaneously.
 
+**🔴 Critical Finding:** The deadlock itself is handled by PostgreSQL (aborts one transaction after 1 second). However, **the sub-orchestration completion notification is lost** when this happens. Sub-orchestrations complete successfully, but the parent orchestration never gets notified and waits forever.
+
 ## Context: How We Use Duroxide-PG
 
 We have a PostgreSQL extension that embeds the Duroxide runtime as a background worker. Users define orchestration graphs (sequences, conditionals, parallel joins, loops) which get executed by the Duroxide runtime using `duroxide-pg` for persistence.
@@ -180,7 +182,55 @@ WHERE duroxide.instance_locks.locked_until <= p_now_ms
    - Transaction 795 (Process 79) holds a lock and waits for Transaction 794
    - Classic deadlock scenario
 
-4. **Post-deadlock state corruption**: After PostgreSQL aborts one transaction to break the deadlock, something goes wrong with the orchestration state. The aborted transaction's work item doesn't get properly re-queued or the orchestration state becomes inconsistent.
+4. **Lost completion notifications**: After PostgreSQL aborts one transaction to break the deadlock, the **sub-orchestration completion signal is lost**. The sub-orchestration is marked complete in its own record, but the parent orchestration never receives notification.
+
+## 🔴 CRITICAL FINDING: Lost Completion Notifications
+
+**PostgreSQL's deadlock_timeout is 1 second.** After detecting a deadlock, PostgreSQL aborts one transaction. However, this doesn't fix the problem - the orchestration remains stuck forever.
+
+### Evidence from Database State
+
+After a deadlock occurs, querying the `duroxide.executions` table shows:
+
+```
+    instance_id    | execution_id |  status   
+-------------------+--------------+-----------
+ 7e98f125          |            1 | Running     <-- Parent stuck!
+ 7e98f125::sub::10 |            1 | Completed   <-- Child completed
+ 7e98f125::sub::11 |            1 | Completed   <-- Child completed
+ 8cb6f497          |            1 | Running     <-- Parent stuck!
+ 8cb6f497::sub::10 |            1 | Completed   <-- Child completed
+ 8cb6f497::sub::11 |            1 | Completed   <-- Child completed
+```
+
+**Both sub-orchestrations completed successfully, but the parent orchestrations are stuck in "Running" forever!**
+
+The queues are empty - no pending work:
+```sql
+SELECT * FROM duroxide.orchestrator_queue;  -- 0 rows
+SELECT * FROM duroxide.worker_queue;         -- 0 rows
+SELECT * FROM duroxide.instance_locks;       -- 0 rows
+```
+
+### What's Happening
+
+1. Sub-orchestration A completes its work
+2. Sub-orchestration A tries to notify parent (signal completion)
+3. **DEADLOCK** occurs during this notification
+4. PostgreSQL aborts the notification transaction
+5. Sub-orchestration A's status is updated to "Completed" (separate transaction)
+6. **But the parent never receives the completion signal**
+7. Parent waits forever for children that already finished
+
+### The Real Bug
+
+The deadlock itself isn't the main problem - PostgreSQL handles it correctly by aborting one transaction after 1 second. **The real bug is that the completion notification is lost and never retried.**
+
+When a sub-orchestration completes, duroxide-pg needs to:
+1. Mark the sub-orchestration as complete ✅ (this works)
+2. Signal the parent orchestration to wake up ❌ (this gets lost on deadlock)
+
+If step 2 fails due to deadlock, it should be retried. Currently it appears to be silently dropped.
 
 ### Why This Only Affects Parallel Operations
 
@@ -189,7 +239,35 @@ WHERE duroxide.instance_locks.locked_until <= p_now_ms
 
 ## Potential Solutions
 
-### 1. Use Advisory Locks Instead of Table Locks
+### Priority 1: Fix Lost Completion Notifications (Critical)
+
+The most important fix is ensuring completion notifications are never lost:
+
+```rust
+// When sub-orchestration completes, retry notification until successful
+async fn signal_parent_completion(parent_id: &str, child_id: &str) -> Result<()> {
+    loop {
+        match notify_parent(&pool, parent_id, child_id).await {
+            Ok(_) => return Ok(()),
+            Err(e) if e.is_deadlock() => {
+                // Deadlock - retry with backoff
+                tokio::time::sleep(Duration::from_millis(rand::random::<u64>() % 100)).await;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+```
+
+Or use a transactional outbox pattern:
+1. Write completion + notification to an outbox table in same transaction
+2. Background process reads outbox and delivers notifications
+3. Notifications are guaranteed to be delivered eventually
+
+### Priority 2: Prevent the Deadlock
+
+#### Option A: Use Advisory Locks
 
 ```sql
 -- Before attempting to acquire instance lock
@@ -199,7 +277,7 @@ SELECT pg_advisory_xact_lock(hashtext(v_instance_id));
 
 This serializes access at a higher level, preventing the deadlock.
 
-### 2. Use SELECT FOR UPDATE with SKIP LOCKED
+#### Option B: Use SELECT FOR UPDATE with SKIP LOCKED
 
 ```sql
 -- First, try to lock the existing row
@@ -212,9 +290,7 @@ FOR UPDATE SKIP LOCKED;
 -- If row exists but SKIP LOCKED skipped it, return nothing (item already being processed)
 ```
 
-### 3. Implement Retry Logic in Rust
-
-When `fetch_orchestration_item` fails with SQLSTATE `40P01` (deadlock_detected), retry the operation:
+#### Option C: Retry on Deadlock in fetch_orchestration_item
 
 ```rust
 loop {
@@ -230,22 +306,39 @@ loop {
 }
 ```
 
-### 4. Serialize Lock Acquisition
+#### Option D: Serialize Lock Acquisition
 
-Instead of having each worker independently call `fetch_orchestration_item`, have a single dispatcher that acquires items and hands them to workers:
+Single dispatcher acquires all pending items and distributes to workers:
 
 ```rust
-// Single dispatcher acquires all pending items
 let items = fetch_orchestration_items_batch(&pool, count).await?;
-// Distribute to workers (no concurrent lock acquisition)
 for item in items {
     worker_pool.submit(item);
 }
 ```
 
-### 5. Change INSERT Order / Use UPSERT with Deterministic Ordering
+#### Option E: Deterministic Lock Ordering
 
 If multiple rows are being inserted, ensure they're always inserted in the same order (e.g., sorted by instance_id) to avoid circular wait conditions.
+
+### Priority 3: Add Orphan Detection
+
+As a safety net, periodically scan for "orphaned" parent orchestrations:
+
+```sql
+-- Find parents stuck waiting for already-completed children
+SELECT DISTINCT p.instance_id as stuck_parent
+FROM duroxide.executions p
+JOIN duroxide.executions c ON c.instance_id LIKE p.instance_id || '::sub::%'
+WHERE p.status = 'Running'
+AND NOT EXISTS (
+    SELECT 1 FROM duroxide.executions c2 
+    WHERE c2.instance_id LIKE p.instance_id || '::sub::%'
+    AND c2.status != 'Completed'
+);
+```
+
+Then re-queue these parents for processing.
 
 ## Observed Behavior Summary
 
@@ -371,5 +464,6 @@ let runtime = runtime::Runtime::start_with_store(
 ---
 
 **Reporter**: pg_durable development team  
-**Date**: December 7, 2025  
-**duroxide-pg version**: Latest from crates.io
+**Date**: December 8, 2025  
+**duroxide-pg version**: Latest from crates.io  
+**PostgreSQL deadlock_timeout**: 1s (default)

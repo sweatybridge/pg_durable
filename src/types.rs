@@ -230,7 +230,7 @@ impl Durofut {
         }
     }
 
-    /// Insert this node into the appropriate table (durable.nodes or temp table in explain mode)
+    /// Insert this node into the appropriate table (df.nodes or temp table in explain mode)
     pub fn insert_node(&self) {
         let query_escaped = self.query.as_ref()
             .map(|q| q.replace('\'', "''"))
@@ -253,7 +253,7 @@ impl Durofut {
         let target_table = if is_explain_mode() {
             "_durable_explain_nodes"
         } else {
-            "durable.nodes"
+            "df.nodes"
         };
 
         let sql = format!(
@@ -269,7 +269,7 @@ impl Durofut {
 /// Check if we're in explain mode (for dry-run graph visualization)
 pub fn is_explain_mode() -> bool {
     Spi::get_one::<bool>(
-        "SELECT COALESCE(current_setting('durable._explain_mode', true), 'false') = 'true'"
+        "SELECT COALESCE(current_setting('df._explain_mode', true), 'false') = 'true'"
     ).ok().flatten().unwrap_or(false)
 }
 

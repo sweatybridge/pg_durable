@@ -1,5 +1,5 @@
 -- Test: Variable substitution
--- Tests both |=> operator and durable.as() function
+-- Tests both |=> operator and df.as() function
 -- Expected: Second step receives value from first step
 
 DROP TABLE IF EXISTS test_vars_log;
@@ -8,16 +8,16 @@ CREATE TABLE test_vars_log (id SERIAL, val TEXT, variant TEXT);
 CREATE TEMP TABLE _test_state (instance_id TEXT, variant TEXT);
 
 -- Variant A: Using |=> operator
-INSERT INTO _test_state SELECT durable.start(
+INSERT INTO _test_state SELECT df.start(
     'SELECT 100 as num' |=> 'x'
     ~> 'INSERT INTO test_vars_log (val, variant) VALUES ($x::text, ''op'')',
     'test-variables-op'
 ), 'operator';
 
--- Variant B: Using durable.as() function
-INSERT INTO _test_state SELECT durable.start(
-    durable.seq(
-        durable.as('y', 'SELECT 200 as num'),
+-- Variant B: Using df.as() function
+INSERT INTO _test_state SELECT df.start(
+    df.seq(
+        df.as('y', 'SELECT 200 as num'),
         'INSERT INTO test_vars_log (val, variant) VALUES ($y::text, ''fn'')'
     ),
     'test-variables-fn'
@@ -36,7 +36,7 @@ BEGIN
         attempts := 0;
         
         LOOP
-            SELECT s INTO status FROM durable.status(rec.instance_id) s;
+            SELECT s INTO status FROM df.status(rec.instance_id) s;
             EXIT WHEN lower(status) IN ('completed', 'failed', 'canceled') OR attempts > 300;
             PERFORM pg_sleep(0.1);
             attempts := attempts + 1;

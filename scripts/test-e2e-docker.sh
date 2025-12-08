@@ -1,0 +1,219 @@
+#!/bin/bash
+# test-e2e-docker.sh - Run E2E tests in Docker (linux/amd64)
+#
+# Usage: ./scripts/test-e2e-docker.sh [options] [test_filter] [repeat_count]
+#
+# Options:
+#   --keep       Leave container running after tests for investigation
+#   --rebuild    Force rebuild of Docker image
+#
+# Examples:
+#   ./scripts/test-e2e-docker.sh                    # Run all tests
+#   ./scripts/test-e2e-docker.sh --keep             # Keep container running
+#   ./scripts/test-e2e-docker.sh 04_parallel        # Run matching test
+#   ./scripts/test-e2e-docker.sh 04_parallel 5      # Run 5 times
+#   ./scripts/test-e2e-docker.sh --keep --rebuild   # Rebuild image, keep running
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SQL_DIR="$PROJECT_DIR/tests/e2e/sql"
+
+CONTAINER_NAME="pg_durable_e2e"
+IMAGE_NAME="pg_durable_e2e_test"
+
+# Defaults
+KEEP_RUNNING=false
+FORCE_REBUILD=false
+TEST_FILTER=""
+REPEAT_COUNT=1
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --keep)
+            KEEP_RUNNING=true
+            shift
+            ;;
+        --rebuild)
+            FORCE_REBUILD=true
+            shift
+            ;;
+        *)
+            if [ -z "$TEST_FILTER" ]; then
+                TEST_FILTER="$1"
+            else
+                REPEAT_COUNT="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+echo "================================================"
+echo "pg_durable E2E Tests (Docker linux/amd64)"
+if [ -n "$TEST_FILTER" ]; then
+    echo -e "Filter: ${CYAN}$TEST_FILTER${NC}"
+fi
+if [ "$REPEAT_COUNT" -gt 1 ]; then
+    echo -e "Repeat: ${CYAN}$REPEAT_COUNT times${NC}"
+fi
+if [ "$KEEP_RUNNING" = true ]; then
+    echo -e "Mode: ${YELLOW}Keep container running after tests${NC}"
+fi
+echo "================================================"
+echo ""
+
+# Cleanup function
+cleanup() {
+    if [ "$KEEP_RUNNING" = false ]; then
+        echo -e "${YELLOW}Stopping container...${NC}"
+        docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+    else
+        echo ""
+        echo -e "${GREEN}Container left running: $CONTAINER_NAME${NC}"
+        echo "Connect: docker exec -it $CONTAINER_NAME psql -U postgres"
+        echo "Logs:    docker logs -f $CONTAINER_NAME"
+        echo "Stop:    ./scripts/pg-stop.sh --docker"
+    fi
+}
+trap cleanup EXIT
+
+# Stop any existing container
+docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+# Build image if needed
+if [ "$FORCE_REBUILD" = true ] || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    echo -e "${YELLOW}Building Docker image (linux/amd64)...${NC}"
+    docker build --platform linux/amd64 -t "$IMAGE_NAME" -f "$PROJECT_DIR/Dockerfile" "$PROJECT_DIR"
+fi
+
+# Start container
+echo -e "${YELLOW}Starting container...${NC}"
+docker run -d \
+    --platform linux/amd64 \
+    --name "$CONTAINER_NAME" \
+    -e POSTGRES_HOST_AUTH_METHOD=trust \
+    "$IMAGE_NAME" >/dev/null
+
+# Wait for PostgreSQL to be fully ready (including post-init restart)
+echo -n "Waiting for PostgreSQL"
+READY_COUNT=0
+for i in {1..90}; do
+    if docker exec "$CONTAINER_NAME" pg_isready -U postgres &>/dev/null; then
+        READY_COUNT=$((READY_COUNT + 1))
+        # Need 3 consecutive ready checks to ensure post-init restart is complete
+        if [ $READY_COUNT -ge 3 ]; then
+            echo " ready!"
+            break
+        fi
+    else
+        READY_COUNT=0
+    fi
+    echo -n "."
+    sleep 1
+done
+
+# Extra wait for background worker to initialize
+sleep 2
+
+# Create extension and verify
+echo -e "${YELLOW}Creating extension...${NC}"
+if ! docker exec "$CONTAINER_NAME" psql -U postgres -c "CREATE EXTENSION IF NOT EXISTS pg_durable;" 2>&1; then
+    echo -e "${RED}Failed to create extension. Container logs:${NC}"
+    docker logs "$CONTAINER_NAME" 2>&1 | tail -50
+    exit 1
+fi
+
+# Show version
+echo -n "pg_durable version: "
+VERSION=$(docker exec "$CONTAINER_NAME" psql -U postgres -t -c "SELECT durable.version();" 2>&1)
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Failed to get version:${NC}"
+    echo "$VERSION"
+    docker logs "$CONTAINER_NAME" 2>&1 | tail -50
+    exit 1
+fi
+echo "$VERSION" | tr -d ' \n'
+echo ""
+echo ""
+
+# Copy test files to container
+docker exec "$CONTAINER_NAME" mkdir -p /tests
+for f in "$SQL_DIR"/*.sql; do
+    docker cp "$f" "$CONTAINER_NAME:/tests/" 2>/dev/null || true
+done
+
+# Run tests
+TOTAL_PASSED=0
+TOTAL_FAILED=0
+
+for run in $(seq 1 $REPEAT_COUNT); do
+    if [ "$REPEAT_COUNT" -gt 1 ]; then
+        echo -e "${CYAN}=== Run $run of $REPEAT_COUNT ===${NC}"
+    fi
+    
+    PASSED=0
+    FAILED=0
+
+    for test_file in "$SQL_DIR"/*.sql; do
+        [ -f "$test_file" ] || continue
+        
+        test_name=$(basename "$test_file" .sql)
+        
+        # Apply filter
+        if [ -n "$TEST_FILTER" ] && [[ ! "$test_name" == *"$TEST_FILTER"* ]]; then
+            continue
+        fi
+        
+        echo -n "  $test_name ... "
+        
+        output=$(docker exec "$CONTAINER_NAME" psql -U postgres -v ON_ERROR_STOP=1 -f "/tests/$test_name.sql" 2>&1)
+        exit_code=$?
+        
+        if [ $exit_code -eq 0 ]; then
+            if echo "$output" | grep -q "TEST PASSED"; then
+                echo -e "${GREEN}PASS${NC}"
+                ((PASSED++))
+            elif echo "$output" | grep -q "TEST FAILED"; then
+                echo -e "${RED}FAIL${NC}"
+                echo "$output" | grep -E "(NOTICE|ERROR|TEST FAILED)" | tail -15
+                ((FAILED++))
+            else
+                echo -e "${GREEN}PASS${NC}"
+                ((PASSED++))
+            fi
+        else
+            echo -e "${RED}FAIL${NC}"
+            echo "$output" | grep -E "(NOTICE|ERROR)" | tail -15
+            ((FAILED++))
+        fi
+    done
+    
+    TOTAL_PASSED=$((TOTAL_PASSED + PASSED))
+    TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
+    
+    if [ "$REPEAT_COUNT" -gt 1 ]; then
+        echo -e "  Run $run: ${GREEN}$PASSED passed${NC}, ${RED}$FAILED failed${NC}"
+        echo ""
+    fi
+done
+
+echo ""
+echo "================================================"
+if [ "$REPEAT_COUNT" -gt 1 ]; then
+    echo "Total Results ($REPEAT_COUNT runs):"
+fi
+echo -e "Results: ${GREEN}$TOTAL_PASSED passed${NC}, ${RED}$TOTAL_FAILED failed${NC}"
+echo "================================================"
+
+[ $TOTAL_FAILED -eq 0 ]
+
