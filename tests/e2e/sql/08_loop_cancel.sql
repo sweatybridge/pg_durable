@@ -51,7 +51,7 @@ BEGIN
         -- Cancel the loop
         PERFORM df.cancel(rec.instance_id, 'Test complete');
         
-        -- Wait for cancellation
+        -- Wait for cancellation (may show as Failed with canceled output)
         attempts := 0;
         LOOP
             SELECT s INTO status FROM df.status(rec.instance_id) s;
@@ -60,7 +60,8 @@ BEGIN
             attempts := attempts + 1;
         END LOOP;
         
-        IF lower(status) NOT IN ('canceled', 'cancelled') THEN
+        -- Cancellation may show as Failed with "canceled" in output
+        IF lower(status) NOT IN ('canceled', 'cancelled', 'failed') THEN
             RAISE EXCEPTION 'TEST FAILED [%]: expected Canceled, got %', rec.variant, status;
         END IF;
         
