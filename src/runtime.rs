@@ -358,12 +358,27 @@ async fn run_duroxide_runtime_with_shutdown() {
 
                 // Execute request
                 let response = request.send().await.map_err(|e| {
+                    // Try to extract status code from error if available
+                    let status_info = e
+                        .status()
+                        .map(|s| format!(" (HTTP {})", s.as_u16()))
+                        .unwrap_or_default();
+
                     if e.is_timeout() {
-                        format!("HTTP timeout after {}s: {}", config.timeout_seconds, config.url)
+                        format!(
+                            "HTTP timeout after {}s{}: {}",
+                            config.timeout_seconds, status_info, config.url
+                        )
                     } else if e.is_connect() {
-                        format!("HTTP connection failed to {}: {}", config.url, e)
+                        format!("HTTP connection failed{}: {} - {}", status_info, config.url, e)
+                    } else if e.is_status() {
+                        // Error due to HTTP status code
+                        format!(
+                            "HTTP request failed{}: {} - {}",
+                            status_info, config.url, e
+                        )
                     } else {
-                        format!("HTTP request failed: {}", e)
+                        format!("HTTP request failed{}: {} - {}", status_info, config.url, e)
                     }
                 })?;
 

@@ -513,27 +513,25 @@ SELECT df.start(
 );
 ```
 
-#### 9. Real-World Example: Scheduled GitHub PR Sync
+#### 9. Real-World Example: Scheduled GitHub Commit Sync
 
-This example creates a scheduled durable function that fetches pull requests from a GitHub repository every 30 minutes and stores them in a table. It demonstrates variables, HTTP requests, and scheduled loops.
+This example creates a scheduled durable function that fetches the last 5 commits from a GitHub repository every 30 minutes and stores them in a table. It demonstrates variables, HTTP requests, parsing complex JSON, and scheduled loops.
 
 ```sql
--- Create table to store PR data
-CREATE TABLE IF NOT EXISTS github_prs (
+-- Create table to store commit data (sha, author, message, time)
+CREATE TABLE IF NOT EXISTS github_commits (
     id SERIAL PRIMARY KEY,
-    pr_number INT UNIQUE,
-    title TEXT,
-    state TEXT,
+    sha TEXT UNIQUE,
     author TEXT,
-    created_at TIMESTAMPTZ,
-    url TEXT,
+    message TEXT,
+    committed_at TIMESTAMPTZ,
     fetched_at TIMESTAMPTZ DEFAULT now()
 );
 
 -- Configure the sync URL using durable function variable
-SELECT df.setvar('github_url', 'https://api.github.com/repos/affandar/duroxide/pulls?state=all&per_page=10');
+SELECT df.setvar('github_url', 'https://api.github.com/repos/affandar/duroxide/commits?per_page=5');
 
--- Start scheduled PR sync (runs every 30 minutes)
+-- Start scheduled commit sync (runs every 30 minutes)
 SELECT df.start(
     @> (
         (df.http(
@@ -542,37 +540,34 @@ SELECT df.start(
             NULL,
             '{"Accept": "application/vnd.github.v3+json", "User-Agent": "pg_durable"}'::jsonb
         ) |=> 'response')
-        ~> 'INSERT INTO github_prs (pr_number, title, state, author, created_at, url)
+        ~> 'INSERT INTO github_commits (sha, author, message, committed_at)
             SELECT 
-                (pr->>''number'')::int,
-                pr->>''title'',
-                pr->>''state'',
-                pr->''user''->>''login'',
-                (pr->>''created_at'')::timestamptz,
-                pr->>''html_url''
-            FROM jsonb_array_elements(($response::jsonb->>''body'')::jsonb) AS pr
-            ON CONFLICT (pr_number) DO UPDATE SET
-                title = EXCLUDED.title,
-                state = EXCLUDED.state,
+                c->>''sha'',
+                c->''commit''->''author''->>''name'',
+                c->''commit''->>''message'',
+                (c->''commit''->''author''->>''date'')::timestamptz
+            FROM jsonb_array_elements(($response::jsonb->>''body'')::jsonb) AS c
+            ON CONFLICT (sha) DO UPDATE SET
                 fetched_at = now()
-            RETURNING pr_number'
+            RETURNING sha'
         ~> df.wait_for_schedule('*/30 * * * *')  -- Every 30 minutes
     ),
-    'github-pr-sync'
+    'github-commit-sync'
 );
 
 -- Check the results
-SELECT * FROM github_prs ORDER BY created_at DESC;
+SELECT sha, author, committed_at, LEFT(message, 50) AS message FROM github_commits;
 
 -- To stop the sync:
--- SELECT df.cancel('<instance_id>', 'Stopping PR sync');
+-- SELECT df.cancel('<instance_id>', 'Stopping commit sync');
 ```
 
 This demonstrates:
 - Configuring API endpoints with durable function variables
 - Calling a real REST API (GitHub)
 - Setting required headers (User-Agent, Accept)
-- Parsing JSON array response with upsert (ON CONFLICT)
+- Parsing nested JSON (extracting `commit.author.name` and `commit.message`)
+- Upserting with ON CONFLICT
 - Creating a scheduled loop that runs every 30 minutes
 
 ---
