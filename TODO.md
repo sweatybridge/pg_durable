@@ -1,5 +1,7 @@
 # TODO 
 
+- retries on all df.* object update operations
+- figure out the right way and level to do logging in pg extensions
 - fault injection using mocks for all node types
 - reformat e2e tests to pull up the actual durable functions at the top, well delimited and separated from all the helpers
 - GC/maintenance: prune old completed/failed orchestration history from duroxide.* tables; detect stuck df.instances rows that never started

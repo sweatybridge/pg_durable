@@ -6,11 +6,15 @@
 use pgrx::prelude::*;
 
 // Module declarations
+pub mod activities;
+pub mod client;
 pub mod dsl;
 pub mod explain;
 pub mod monitoring;
-pub mod runtime;
+pub mod orchestrations;
+pub mod registry;
 pub mod types;
+pub mod worker;
 
 // Re-export key types for tests
 pub use types::Durofut;
@@ -23,7 +27,7 @@ pub use types::Durofut;
 
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
-    runtime::register_background_worker();
+    worker::register_background_worker();
 }
 
 // ============================================================================

@@ -1,10 +1,11 @@
 //! DSL functions for defining durable SQL functions
 
+use chrono::Utc;
 use cron::Schedule as CronSchedule;
 use pgrx::prelude::*;
 use std::str::FromStr;
 
-use crate::runtime::start_durable_function;
+use crate::client::start_durable_function;
 use crate::types::{short_id, Durofut, FunctionInput};
 
 /// Check if we're running inside a workflow context (background worker connection).
@@ -188,19 +189,37 @@ pub fn sleep(seconds: i64) -> String {
 }
 
 /// Creates a wait-for-schedule node that waits until the next cron match.
+/// The wait duration is computed at DSL time (when this function is called)
+/// to ensure deterministic replay in the orchestration.
 #[pg_extern(schema = "df")]
 pub fn wait_for_schedule(cron_expr: &str) -> String {
     let cron_with_seconds = format!("0 {}", cron_expr);
-    if CronSchedule::from_str(&cron_with_seconds).is_err() {
-        pgrx::error!("Invalid cron expression: {}", cron_expr);
-    }
+    let schedule = match CronSchedule::from_str(&cron_with_seconds) {
+        Ok(s) => s,
+        Err(e) => pgrx::error!("Invalid cron expression '{}': {}", cron_expr, e),
+    };
+
+    // Compute wait duration NOW (at DSL time) for deterministic orchestration replay
+    let now = Utc::now();
+    let next = match schedule.upcoming(Utc).next() {
+        Some(t) => t,
+        None => pgrx::error!("No upcoming schedule found for '{}'", cron_expr),
+    };
+
+    let duration_secs = (next - now).num_seconds().max(0) as u64;
+
+    // Store pre-computed seconds, not the cron expression
+    let config = serde_json::json!({
+        "cron_expr": cron_expr,
+        "wait_seconds": duration_secs
+    });
 
     let durofut = Durofut {
         node_id: short_id(),
         node_type: "WAIT_SCHEDULE".to_string(),
         left_node: None,
         right_node: None,
-        query: Some(cron_expr.to_string()),
+        query: Some(config.to_string()),
         result_name: None,
     };
     durofut.insert_node();
@@ -425,7 +444,7 @@ pub fn signal(
     signal_name: &str,
     signal_data: default!(&str, "'{}'"),
 ) -> String {
-    use crate::runtime::raise_external_event;
+    use crate::client::raise_external_event;
 
     if instance_id.is_empty() {
         pgrx::error!("Instance ID cannot be empty");
@@ -560,7 +579,7 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
     };
     let input_json = serde_json::to_string(&input).unwrap_or(instance_id.clone());
 
-    if let Err(e) = start_durable_function("ExecuteFunctionGraph", &instance_id, &input_json) {
+    if let Err(e) = start_durable_function(crate::orchestrations::execute_function_graph::NAME, &instance_id, &input_json) {
         pgrx::log!(
             "pg_durable: Warning - failed to start durable function: {}",
             e
@@ -573,7 +592,7 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
 /// Cancels a running durable function.
 #[pg_extern(schema = "df")]
 pub fn cancel(instance_id: &str, reason: default!(&str, "'Cancelled by user'")) -> String {
-    use crate::runtime::cancel_durable_function;
+    use crate::client::cancel_durable_function;
 
     if let Err(e) = cancel_durable_function(instance_id, reason) {
         return format!("Failed to cancel: {}", e);
