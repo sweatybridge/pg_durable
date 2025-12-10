@@ -1,5 +1,9 @@
 # TODO 
 
+- Compensation/Saga: `<->` operator and `df.with_undo()` for saga-style rollback (see docs/spec-compensation.md)
+- think of error handling, retries and compensating transactions
+- write down grammar rules and examples
+- samples for pg_fdw
 - retries on all df.* object update operations
 - figure out the right way and level to do logging in pg extensions
 - fault injection using mocks for all node types
