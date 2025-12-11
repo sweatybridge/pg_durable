@@ -226,18 +226,72 @@ pub fn wait_for_schedule(cron_expr: &str) -> String {
     durofut.to_json()
 }
 
-/// Creates a loop node that repeats the body indefinitely.
-/// The body argument can be either Durofut JSON or plain SQL string (auto-wrapped).
+/// Creates a loop node.
+///
+/// With one argument: repeats the body indefinitely (infinite loop).
+/// With two arguments: repeats while the condition is true (while loop).
+///
+/// The body and condition can be either Durofut JSON or plain SQL strings (auto-wrapped).
+/// The condition is evaluated after each iteration (do-while semantics).
+///
+/// # Examples
+/// ```sql
+/// -- Infinite loop
+/// df.loop('SELECT process_item()')
+///
+/// -- While loop - continues while condition is true
+/// df.loop('SELECT process_item()', 'SELECT count(*) > 0 FROM queue')
+/// ```
 #[pg_extern(name = "loop", schema = "df")]
-pub fn loop_fn(body: &str) -> String {
+pub fn loop_fn(body: &str, condition: default!(Option<&str>, "NULL")) -> String {
     let body_fut = Durofut::ensure(body);
+
+    let (right_node, query) = if let Some(cond) = condition {
+        let cond_fut = Durofut::ensure(cond);
+        let config = serde_json::json!({
+            "condition_node": cond_fut.node_id
+        });
+        (Some(cond_fut.node_id), Some(config.to_string()))
+    } else {
+        (None, None)
+    };
 
     let durofut = Durofut {
         node_id: short_id(),
         node_type: "LOOP".to_string(),
         left_node: Some(body_fut.node_id),
+        right_node,
+        query,
+        result_name: None,
+    };
+    durofut.insert_node();
+    durofut.to_json()
+}
+
+/// Creates a break node that exits the enclosing loop.
+///
+/// When executed, the loop terminates and returns the provided value (or null).
+///
+/// # Examples
+/// ```sql
+/// -- Break with no value
+/// df.break()
+///
+/// -- Break with a return value
+/// df.break('{"status": "complete"}')
+/// ```
+#[pg_extern(name = "break", schema = "df")]
+pub fn break_fn(value: default!(Option<&str>, "NULL")) -> String {
+    let config = serde_json::json!({
+        "break_value": value
+    });
+
+    let durofut = Durofut {
+        node_id: short_id(),
+        node_type: "BREAK".to_string(),
+        left_node: None,
         right_node: None,
-        query: None,
+        query: Some(config.to_string()),
         result_name: None,
     };
     durofut.insert_node();

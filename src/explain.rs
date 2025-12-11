@@ -421,6 +421,13 @@ fn render_children(
 ) {
     match node.node_type.as_str() {
         "LOOP" => {
+            // Check for while-condition
+            let condition_id = node
+                .query
+                .as_ref()
+                .and_then(|q| serde_json::from_str::<serde_json::Value>(q).ok())
+                .and_then(|v| v["condition_node"].as_str().map(|s| s.to_string()));
+
             if let Some(ref body_id) = node.left_node {
                 output.push_str(&format!("{}↻ body:\n", prefix));
                 build_tree_recursive(
@@ -432,6 +439,21 @@ fn render_children(
                     show_status,
                 );
             }
+
+            if let Some(ref cond_id) = condition_id {
+                output.push_str(&format!("{}? while:\n", prefix));
+                build_tree_recursive(
+                    cond_id,
+                    nodes,
+                    &format!("{}  ", prefix),
+                    true,
+                    output,
+                    show_status,
+                );
+            }
+        }
+        "BREAK" => {
+            // BREAK has no children, just the value in query
         }
         "IF" => {
             // Parse condition from query JSON
@@ -592,7 +614,33 @@ fn format_node_display(node: &ExplainNode) -> String {
                 .unwrap_or_default();
             format!("SIGNAL '{}'{}{}", signal_name, timeout_str, name_suffix)
         }
-        "LOOP" => format!("LOOP{}", name_suffix),
+        "LOOP" => {
+            // Check if it has a while condition
+            let has_condition = node
+                .query
+                .as_ref()
+                .and_then(|q| serde_json::from_str::<serde_json::Value>(q).ok())
+                .map(|cfg| cfg["condition_node"].is_string())
+                .unwrap_or(false);
+            if has_condition {
+                format!("LOOP (while){}", name_suffix)
+            } else {
+                format!("LOOP (infinite){}", name_suffix)
+            }
+        }
+        "BREAK" => {
+            // Parse config to get break value
+            let value = node
+                .query
+                .as_ref()
+                .and_then(|q| serde_json::from_str::<serde_json::Value>(q).ok())
+                .and_then(|cfg| cfg["break_value"].as_str().map(|s| s.to_string()));
+            match value {
+                Some(v) if v.len() > 20 => format!("BREAK '{}...'{}", &v[..17], name_suffix),
+                Some(v) => format!("BREAK '{}'{}", v, name_suffix),
+                None => format!("BREAK{}", name_suffix),
+            }
+        }
         "IF" => format!("IF{}", name_suffix),
         "JOIN" => {
             // Count branches

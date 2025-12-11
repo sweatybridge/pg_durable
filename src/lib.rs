@@ -419,10 +419,40 @@ mod tests {
     #[pg_test]
     fn test_loop_creates_loop_node() {
         let body = crate::dsl::sql("SELECT 1");
-        let json = crate::dsl::loop_fn(&body);
+        let json = crate::dsl::loop_fn(&body, None);
         let fut = Durofut::from_json(&json);
         assert_eq!(fut.node_type, "LOOP");
         assert!(fut.left_node.is_some());
+        assert!(fut.right_node.is_none()); // No condition = infinite loop
+    }
+
+    #[pg_test]
+    fn test_loop_with_condition_creates_while_loop() {
+        let body = crate::dsl::sql("SELECT 1");
+        let condition = crate::dsl::sql("SELECT count(*) > 0 FROM queue");
+        let json = crate::dsl::loop_fn(&body, Some(&condition));
+        let fut = Durofut::from_json(&json);
+        assert_eq!(fut.node_type, "LOOP");
+        assert!(fut.left_node.is_some()); // body
+        assert!(fut.right_node.is_some()); // condition
+        assert!(fut.query.is_some()); // has config with condition_node
+    }
+
+    #[pg_test]
+    fn test_break_creates_break_node() {
+        let json = crate::dsl::break_fn(None);
+        let fut = Durofut::from_json(&json);
+        assert_eq!(fut.node_type, "BREAK");
+    }
+
+    #[pg_test]
+    fn test_break_with_value() {
+        let json = crate::dsl::break_fn(Some(r#"{"status": "done"}"#));
+        let fut = Durofut::from_json(&json);
+        assert_eq!(fut.node_type, "BREAK");
+        assert!(fut.query.is_some());
+        let config: serde_json::Value = serde_json::from_str(fut.query.as_ref().unwrap()).unwrap();
+        assert_eq!(config["break_value"].as_str().unwrap(), r#"{"status": "done"}"#);
     }
 
     #[pg_test]
@@ -966,7 +996,7 @@ mod tests {
     #[pg_test]
     fn test_autowrap_loop_plain_sql() {
         // Loop body as plain SQL
-        let result = crate::dsl::loop_fn("SELECT 1");
+        let result = crate::dsl::loop_fn("SELECT 1", None);
         let fut = Durofut::from_json(&result);
         assert_eq!(fut.node_type, "LOOP");
     }

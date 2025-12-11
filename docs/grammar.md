@@ -61,7 +61,8 @@ node_function ::= df.sql( QUERY )
                 | df.race( expression, expression )
                 | df.seq( expression, expression )
                 | df.if( condition, then_expr, else_expr )
-                | df.loop( expression )
+                | df.loop( expression [, condition] )
+                | df.break( [value] )
                 | df.as( expression, NAME )
 ```
 
@@ -153,13 +154,29 @@ df.if(
 ### Loops
 
 ```sql
--- Infinite loop with schedule
+-- Infinite loop with @> operator
 @> (
     df.wait_for_schedule('*/5 * * * *')
     ~> 'INSERT INTO heartbeats VALUES (now())'
 )
 
--- Loop with escape via race
+-- While loop (continues while condition is true)
+df.loop(
+    'SELECT process_item()',
+    'SELECT count(*) > 0 FROM queue'  -- while queue has items
+)
+
+-- Loop with df.break() to exit
+df.loop(
+    'SELECT process_batch()' |=> 'batch'
+    ~> (
+        '$batch.done'
+            ?> df.break('{"status": "complete"}')  -- exit with value
+            !> df.sleep(5)
+    )
+)
+
+-- Loop with escape via race (alternative to break)
 @> (
     'CALL process_queue()'
     ~> df.sleep(60)
@@ -266,7 +283,8 @@ This applies to all operator positions and function arguments.
 | `JOIN` | `&`, `df.join()` | Parallel, wait all |
 | `RACE` | `\|`, `df.race()` | Parallel, first wins |
 | `IF` | `?>` `!>`, `df.if()` | Conditional branch |
-| `LOOP` | `@>`, `df.loop()` | Infinite repetition |
+| `LOOP` | `@>`, `df.loop()` | Loop (infinite or while-condition) |
+| `BREAK` | `df.break()` | Exit enclosing loop with optional value |
 | `SLEEP` | `df.sleep()` | Pause for N seconds |
 | `WAIT_SCHEDULE` | `df.wait_for_schedule()` | Wait for cron match |
 | `SIGNAL` | `df.wait_for_signal()` | Wait for external event |

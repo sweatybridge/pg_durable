@@ -93,7 +93,7 @@ pub fn evaluate_condition(result: &str) -> Result<bool, String> {
         || lower.parse::<i64>().map(|n| n != 0).unwrap_or(false))
 }
 
-fn is_truthy(value: &serde_json::Value) -> bool {
+pub fn is_truthy(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Bool(b) => *b,
         serde_json::Value::Number(n) => {

@@ -146,6 +146,9 @@ df.sql('SELECT 1') ~> df.sql('SELECT 2')
 | `df.race(a, b)` | Execute in parallel, first wins | `df.race(fast_query, slow_query)` |
 | `df.if(cond, then, else)` | Conditional branch | `df.if('SELECT true', a, b)` |
 | `df.loop(body)` | Repeat forever | `df.loop(body)` |
+| `df.loop(body, cond)` | Repeat while condition is true | `df.loop(body, 'SELECT count(*) > 0 FROM q')` |
+| `df.break()` | Exit enclosing loop | `df.break()` |
+| `df.break(value)` | Exit loop with return value | `df.break('{"done": true}')` |
 | `df.start(func, label)` | Start function | `df.start('SELECT 1', 'job')` |
 | `df.cancel(id, reason)` | Cancel function | `df.cancel('a1b2c3d4', 'Done')` |
 | `df.status(id)` | Get status | `df.status('a1b2c3d4')` |
@@ -779,7 +782,43 @@ SELECT df.start(
 );
 ```
 
-### Stopping a Loop
+### While Loops
+
+Use `df.loop(body, condition)` to repeat while a condition is true:
+
+```sql
+-- Process items while queue has entries
+SELECT df.start(
+    df.loop(
+        'SELECT process_next_item()' ~> df.sleep(1),
+        'SELECT count(*) > 0 FROM task_queue WHERE status = ''pending'''
+    ),
+    'queue-processor'
+);
+```
+
+### Breaking Out of Loops
+
+Use `df.break()` to exit a loop from inside its body:
+
+```sql
+-- Process batches until done flag is set
+SELECT df.start(
+    df.loop(
+        'SELECT process_batch()' |=> 'batch'
+        ~> (
+            '$batch.done'
+                ?> df.break('{"status": "complete", "total": $batch.count}')
+                !> df.sleep(5)
+        )
+    ),
+    'batch-processor'
+);
+```
+
+`df.break(value)` exits the loop and returns the value as the loop's final result.
+
+### Stopping a Loop Externally
 
 ```sql
 -- Cancel by instance ID
@@ -1183,6 +1222,13 @@ SELECT df.start(df.if('SELECT true', 'yes', 'no')); -- function
 -- Loop forever (@> operator or df.loop)
 SELECT df.start(@> (body ~> df.sleep(60)));       -- operator
 SELECT df.start(df.loop(body ~> df.sleep(60)));   -- function
+
+-- While loop (continues while condition is true)
+SELECT df.start(df.loop(body, 'SELECT count(*) > 0 FROM queue'));
+
+-- Break out of loop
+df.break()                               -- exit loop
+df.break('{"done": true}')               -- exit with return value
 
 -- Timers
 df.sleep(60)                             -- 60 seconds

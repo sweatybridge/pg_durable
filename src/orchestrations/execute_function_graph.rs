@@ -12,8 +12,8 @@ use duroxide::OrchestrationContext;
 
 use crate::activities;
 use crate::types::{
-    evaluate_condition, substitute_all, substitute_all_raw, FunctionGraph, FunctionInput,
-    FunctionNode, SystemVars,
+    evaluate_condition, is_truthy, substitute_all, substitute_all_raw, FunctionGraph,
+    FunctionInput, FunctionNode, SystemVars,
 };
 
 /// Orchestration name for ExecuteFunctionGraph
@@ -246,6 +246,7 @@ async fn execute_node_inner(
         "race" => execute_race_node(ctx, graph, node, node_id, results).await,
         "http" => execute_http_node(ctx, node, node_id, results, exec_ctx, &sys_vars).await,
         "signal" => execute_signal_node(ctx, node, node_id, results).await,
+        "break" => execute_break_node(ctx, node, node_id).await,
         other => Err(format!("Unknown node type: {}", other)),
     }
 }
@@ -300,10 +301,16 @@ async fn execute_then_node(
         .as_ref()
         .ok_or_else(|| format!("THEN node {} has no right_node", node_id))?;
 
-    let _left_result = Box::pin(execute_function_node_with_vars(
+    let left_result = Box::pin(execute_function_node_with_vars(
         ctx, graph, left_id, results, exec_ctx,
     ))
     .await?;
+
+    // Propagate break signals immediately
+    if is_break_signal(&left_result) {
+        return Ok(left_result);
+    }
+
     let right_result = Box::pin(execute_function_node_with_vars(
         ctx, graph, right_id, results, exec_ctx,
     ))
@@ -365,6 +372,25 @@ async fn execute_wait_schedule_node(
     Ok(r#"{"scheduled": true}"#.to_string())
 }
 
+/// Sentinel key used to signal a break from within a loop
+const BREAK_SENTINEL: &str = "__break__";
+
+/// Check if a result contains a break signal
+fn is_break_signal(result: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(result)
+        .map(|v| v.get(BREAK_SENTINEL).and_then(|b| b.as_bool()).unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// Extract the break value from a break signal
+fn extract_break_value(result: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(result)
+        .ok()
+        .and_then(|v| v.get("value").cloned())
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".to_string())
+}
+
 async fn execute_loop_node(
     ctx: &OrchestrationContext,
     graph: &FunctionGraph,
@@ -384,6 +410,40 @@ async fn execute_loop_node(
     ))
     .await?;
 
+    // Check for break signal from body
+    if is_break_signal(&body_result) {
+        let break_value = extract_break_value(&body_result);
+        ctx.trace_info(format!("Loop terminated by break with value: {}", break_value));
+        return Ok(break_value);
+    }
+
+    // Check while-condition if present
+    if let Some(ref config_str) = node.query {
+        if let Ok(config) = serde_json::from_str::<serde_json::Value>(config_str) {
+            if let Some(condition_node_id) = config["condition_node"].as_str() {
+                ctx.trace_info("Evaluating loop condition");
+                let condition_result = Box::pin(execute_function_node_with_vars(
+                    ctx, graph, condition_node_id, results, exec_ctx,
+                ))
+                .await?;
+
+                // Parse condition result to check truthiness
+                let condition_value: serde_json::Value =
+                    serde_json::from_str(&condition_result).unwrap_or(serde_json::Value::Null);
+                let should_continue = is_truthy(&condition_value);
+                ctx.trace_info(format!(
+                    "Loop condition evaluated to: {} (continue={})",
+                    condition_result, should_continue
+                ));
+
+                if !should_continue {
+                    ctx.trace_info("Loop condition false, exiting loop");
+                    return Ok(body_result);
+                }
+            }
+        }
+    }
+
     ctx.trace_info("Continuing as new for next loop iteration");
     // Preserve vars in continue_as_new input
     let new_input = FunctionInput {
@@ -391,11 +451,41 @@ async fn execute_loop_node(
         label: exec_ctx.label.clone(),
         vars: exec_ctx.vars.clone(),
     };
+
+    // duroxide 0.1.1: continue_as_new now returns an awaitable future
     ctx.continue_as_new(
         serde_json::to_string(&new_input).unwrap_or(graph.instance_id.clone()),
-    );
+    )
+    .await
+    .map_err(|e| format!("continue_as_new failed: {:?}", e))?;
 
     Ok(body_result)
+}
+
+async fn execute_break_node(
+    ctx: &OrchestrationContext,
+    node: &FunctionNode,
+    node_id: &str,
+) -> Result<String, String> {
+    let break_value = node
+        .query
+        .as_ref()
+        .and_then(|config_str| serde_json::from_str::<serde_json::Value>(config_str).ok())
+        .and_then(|config| config.get("break_value").cloned())
+        .and_then(|v| if v.is_null() { None } else { v.as_str().map(|s| s.to_string()) });
+
+    ctx.trace_info(format!(
+        "BREAK node {} executed with value: {:?}",
+        node_id, break_value
+    ));
+
+    // Return a special break signal that the loop will detect
+    let result = serde_json::json!({
+        BREAK_SENTINEL: true,
+        "value": break_value.map(|v| serde_json::from_str::<serde_json::Value>(&v).unwrap_or(serde_json::Value::String(v)))
+    });
+
+    Ok(result.to_string())
 }
 
 async fn execute_if_node(
