@@ -1,5 +1,10 @@
 # TODO 
 
+- Configurable multiple background workers via GUC (pg_durable.worker_count) for horizontal scaling;
+- Function templates
+- [ ] Implement Parameterized Queries (See [Proposal](docs/parameterized_queries_proposal.md))
+- [ ] Implement `df.run` stub
+- Dump the function definition, explain chops off the statements
 - Compensation/Saga: `<->` operator and `df.with_undo()` for saga-style rollback (see docs/spec-compensation.md)
 - think of error handling, retries and compensating transactions
 - samples for pg_fdw
