@@ -44,6 +44,9 @@ chrono = "0.4"
 # For HTTP requests (df.http)
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
+# For duroxide tracing integration
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [dev-dependencies]
 pgrx-tests = "=0.16.1"
 

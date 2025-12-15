@@ -11,9 +11,20 @@ use std::time::Duration;
 use duroxide::runtime;
 use duroxide_pg::PostgresProvider;
 use sqlx::postgres::PgPoolOptions;
+use tracing_subscriber::EnvFilter;
 
 use crate::registry::{create_activity_registry, create_orchestration_registry};
 use crate::types::{postgres_connection_string, DUROXIDE_SCHEMA};
+
+/// Initialize tracing subscriber for duroxide logs.
+/// Must be called before Runtime::start_with_store() to capture all logs.
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("warn,duroxide::orchestration=info,duroxide::activity=info")
+    });
+
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+}
 
 /// Initialize the background worker
 pub fn register_background_worker() {
@@ -21,7 +32,7 @@ pub fn register_background_worker() {
         .set_function("duroxide_worker_main")
         .set_library("pg_durable")
         .set_argument(0i32.into_datum())
-        .enable_spi_access()
+        .enable_shmem_access(None)
         .set_start_time(BgWorkerStartTime::RecoveryFinished)
         .set_restart_time(Some(Duration::from_secs(5)))
         .load();
@@ -29,7 +40,9 @@ pub fn register_background_worker() {
 
 /// Check if PostgreSQL has requested shutdown
 fn is_shutdown_requested() -> bool {
-    unsafe { pgrx::pg_sys::ShutdownRequestPending != 0 }
+    unsafe {
+        std::ptr::read_volatile(std::ptr::addr_of!(pgrx::pg_sys::ShutdownRequestPending)) != 0
+    }
 }
 
 /// Main duroxide background worker
@@ -38,10 +51,12 @@ fn is_shutdown_requested() -> bool {
 pub extern "C-unwind" fn duroxide_worker_main(_arg: pg_sys::Datum) {
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM);
 
+    // Initialize tracing before duroxide runtime to capture all logs including startup
+    init_tracing();
+
     log!("pg_durable: duroxide background worker starting...");
 
-    let rt = match tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+    let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
