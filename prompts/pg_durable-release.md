@@ -211,9 +211,15 @@ Would you like to push the image to Azure Container Registry? (y/n)
   - Image: ${ACR_IMAGE:-pg_durable}
   
 Options:
-  1. Push as :latest
-  2. Push with version tag (e.g., :v0.1.0)
-  3. Skip
+  1. Push as :latest only
+  2. Push as :latest AND with a version tag (e.g., :v0.1.0)
+  3. Push with version tag only (specify tag)
+  4. Skip
+```
+
+If user selects option 2 or 3, ask for the version tag:
+```
+Enter version tag (e.g., v0.1.6): 
 ```
 
 ### 6.2 Login to ACR (if needed)
@@ -362,6 +368,35 @@ git log --oneline origin/main -5
 
 # Verify tag (if created)
 git ls-remote --tags origin | tail -5
+```
+
+## Step 8: Final Verification
+
+### 8.1 Display Expected Version
+
+At the end of the release, display the expected version string for verification:
+
+```
+✅ Release Complete!
+
+Expected df.version() output:
+  X.Y.Z (built YYYY-MM-DDTHH:MM:SSZ)
+
+To verify after deployment, connect to a pg_durable instance and run:
+  SELECT df.version();
+
+The version should match the build timestamp from:
+  - Docker build: check the "pg_durable version:" line from E2E test output
+  - ACR image: the image was pushed at [timestamp]
+```
+
+### 8.2 Get Version Info
+```bash
+# Get version from Cargo.toml
+grep '^version' Cargo.toml
+
+# Get build timestamp from most recent Docker build
+docker inspect pg_durable:latest --format '{{.Created}}'
 ```
 
 ## Checklist Summary

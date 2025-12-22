@@ -33,7 +33,7 @@ fi
 # Configuration (can be overridden via .env or environment)
 ACR_REGISTRY="${ACR_REGISTRY:-toygresacr.azurecr.io}"
 ACR_IMAGE="${ACR_IMAGE:-pg_durable}"
-LOCAL_IMAGE="pg_durable_e2e_test"
+LOCAL_IMAGE="pg_durable:latest"
 
 # Defaults
 FORCE_REBUILD=false

@@ -21,7 +21,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SQL_DIR="$PROJECT_DIR/tests/e2e/sql"
 
 CONTAINER_NAME="pg_durable_e2e"
-IMAGE_NAME="pg_durable_e2e_test"
+IMAGE_NAME="pg_durable:latest"
 
 # Defaults
 KEEP_RUNNING=false
