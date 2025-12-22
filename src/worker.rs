@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use duroxide::runtime;
-use duroxide_pg::PostgresProvider;
+use duroxide_pg_opt::PostgresProvider;
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -152,4 +152,3 @@ async fn run_duroxide_runtime() {
     duroxide_runtime.shutdown(Some(10_000)).await;
     log!("pg_durable: duroxide runtime shutdown complete");
 }
-

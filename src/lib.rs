@@ -243,7 +243,7 @@ mod tests {
     /// Ensure the Duroxide store exists and is ready
     fn ensure_store_ready() -> Result<String, String> {
         use crate::types::{postgres_connection_string, DUROXIDE_SCHEMA};
-        use duroxide_pg::PostgresProvider;
+        use duroxide_pg_opt::PostgresProvider;
         use std::time::{Duration, Instant};
 
         let pg_conn_str = postgres_connection_string();
@@ -280,7 +280,7 @@ mod tests {
     fn wait_for_completion(instance_id: &str, timeout_secs: u64) -> Result<String, String> {
         use crate::types::{postgres_connection_string, DUROXIDE_SCHEMA};
         use duroxide::Client;
-        use duroxide_pg::PostgresProvider;
+        use duroxide_pg_opt::PostgresProvider;
         use std::time::{Duration, Instant};
 
         // Ensure store is ready first
@@ -345,7 +345,7 @@ mod tests {
     fn get_duroxide_status(instance_id: &str) -> Option<String> {
         use crate::types::{postgres_connection_string, DUROXIDE_SCHEMA};
         use duroxide::Client;
-        use duroxide_pg::PostgresProvider;
+        use duroxide_pg_opt::PostgresProvider;
 
         let _ = ensure_store_ready().ok()?;
         let pg_conn_str = postgres_connection_string();
@@ -452,7 +452,10 @@ mod tests {
         assert_eq!(fut.node_type, "BREAK");
         assert!(fut.query.is_some());
         let config: serde_json::Value = serde_json::from_str(fut.query.as_ref().unwrap()).unwrap();
-        assert_eq!(config["break_value"].as_str().unwrap(), r#"{"status": "done"}"#);
+        assert_eq!(
+            config["break_value"].as_str().unwrap(),
+            r#"{"status": "done"}"#
+        );
     }
 
     #[pg_test]

@@ -5,7 +5,7 @@ use pgrx::prelude::*;
 use std::sync::Arc;
 
 use crate::types::{postgres_connection_string, DUROXIDE_SCHEMA};
-use duroxide_pg::PostgresProvider;
+use duroxide_pg_opt::PostgresProvider;
 
 // ============================================================================
 // Monitoring Functions

@@ -16,9 +16,7 @@ pub async fn execute(
     let input: serde_json::Value = serde_json::from_str(&input_json)
         .map_err(|e| format!("Failed to parse status update input: {}", e))?;
 
-    let instance_id = input["instance_id"]
-        .as_str()
-        .ok_or("Missing instance_id")?;
+    let instance_id = input["instance_id"].as_str().ok_or("Missing instance_id")?;
     let status = input["status"].as_str().ok_or("Missing status")?;
 
     ctx.trace_info(format!(
@@ -53,4 +51,3 @@ pub async fn execute(
         }
     }
 }
-

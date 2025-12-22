@@ -114,7 +114,7 @@ fn explain_instance(instance_id: &str) -> String {
         result.push_str(&format!("Output:   {}\n", truncated));
     }
 
-    result.push_str("\n");
+    result.push('\n');
 
     // Build tree visualization
     result.push_str(&build_tree_visualization(&root_id, &nodes, true));
@@ -126,7 +126,7 @@ fn explain_instance(instance_id: &str) -> String {
 fn get_duroxide_instance_info(instance_id: &str) -> (String, Option<String>) {
     use crate::types::{postgres_connection_string, DUROXIDE_SCHEMA};
     use duroxide::Client;
-    use duroxide_pg::PostgresProvider;
+    use duroxide_pg_opt::PostgresProvider;
     use std::sync::Arc;
 
     let pg_conn_str = postgres_connection_string();
@@ -609,9 +609,7 @@ fn format_node_display(node: &ExplainNode) -> String {
                     (name.to_string(), timeout)
                 })
                 .unwrap_or_else(|| ("?".to_string(), None));
-            let timeout_str = timeout
-                .map(|t| format!(" ({}s)", t))
-                .unwrap_or_default();
+            let timeout_str = timeout.map(|t| format!(" ({}s)", t)).unwrap_or_default();
             format!("SIGNAL '{}'{}{}", signal_name, timeout_str, name_suffix)
         }
         "LOOP" => {

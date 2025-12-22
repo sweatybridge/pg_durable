@@ -41,8 +41,13 @@ pub fn create_activity_registry(pool: Arc<PgPool>) -> ActivityRegistry {
 /// Create the orchestration registry with all registered orchestrations
 pub fn create_orchestration_registry() -> OrchestrationRegistry {
     OrchestrationRegistry::builder()
-        .register(orchestrations::execute_function_graph::NAME, orchestrations::execute_function_graph::execute)
-        .register(orchestrations::execute_function_graph::SUBTREE_NAME, orchestrations::execute_function_graph::execute_subtree)
+        .register(
+            orchestrations::execute_function_graph::NAME,
+            orchestrations::execute_function_graph::execute,
+        )
+        .register(
+            orchestrations::execute_function_graph::SUBTREE_NAME,
+            orchestrations::execute_function_graph::execute_subtree,
+        )
         .build()
 }
-

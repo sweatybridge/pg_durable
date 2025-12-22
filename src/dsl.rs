@@ -493,11 +493,7 @@ pub fn wait_for_signal(name: &str, timeout_seconds: default!(Option<i32>, "NULL"
 /// # Returns
 /// 'OK' on success, raises error on failure
 #[pg_extern(schema = "df")]
-pub fn signal(
-    instance_id: &str,
-    signal_name: &str,
-    signal_data: default!(&str, "'{}'"),
-) -> String {
+pub fn signal(instance_id: &str, signal_name: &str, signal_data: default!(&str, "'{}'")) -> String {
     use crate::client::raise_external_event;
 
     if instance_id.is_empty() {
@@ -633,7 +629,11 @@ pub fn start(fut: &str, label: default!(Option<&str>, "NULL")) -> String {
     };
     let input_json = serde_json::to_string(&input).unwrap_or(instance_id.clone());
 
-    if let Err(e) = start_durable_function(crate::orchestrations::execute_function_graph::NAME, &instance_id, &input_json) {
+    if let Err(e) = start_durable_function(
+        crate::orchestrations::execute_function_graph::NAME,
+        &instance_id,
+        &input_json,
+    ) {
         pgrx::log!(
             "pg_durable: Warning - failed to start durable function: {}",
             e

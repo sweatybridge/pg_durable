@@ -6,7 +6,7 @@
 use std::sync::{Arc, OnceLock};
 
 use duroxide::Client;
-use duroxide_pg::PostgresProvider;
+use duroxide_pg_opt::PostgresProvider;
 use pgrx::prelude::*;
 use tokio::runtime::Runtime;
 
@@ -89,11 +89,7 @@ pub fn cancel_durable_function(instance_id: &str, reason: &str) -> Result<(), St
 }
 
 /// Raise an external event (signal) to a running orchestration.
-pub fn raise_external_event(
-    instance_id: &str,
-    event_name: &str,
-    data: &str,
-) -> Result<(), String> {
+pub fn raise_external_event(instance_id: &str, event_name: &str, data: &str) -> Result<(), String> {
     let rt = get_client_runtime();
     let client = get_duroxide_client()?;
 
@@ -105,4 +101,3 @@ pub fn raise_external_event(
         Ok(())
     })
 }
-

@@ -1,0 +1,441 @@
+# Release Workflow
+
+## Objective
+Prepare and release a new version of pg_durable with quality checks, documentation updates, and optional Docker deployment.
+
+## Step 1: Check for Dependency Updates
+
+### 1.1 Check duroxide Dependencies
+
+The project uses these duroxide dependencies from `Cargo.toml`:
+- `duroxide` (crates.io version)
+- `duroxide-pg-opt` (GitHub tag)
+
+**Check for new duroxide version:**
+```bash
+# Check current version in Cargo.toml
+grep "duroxide" Cargo.toml
+
+# Check latest version on crates.io
+cargo search duroxide --limit 5
+```
+
+**Check for new duroxide-pg-opt tag:**
+```bash
+# List recent tags from the Azure/duroxide-pg-opt repo
+git ls-remote --tags ssh://git@github.com/Azure/duroxide-pg-opt.git | tail -10
+```
+
+### 1.2 Ask User About Updates
+
+If new versions are available, present them to the user:
+
+```
+📦 Dependency Update Check:
+
+Current versions:
+  - duroxide: 0.1.6
+  - duroxide-pg-opt: v0.1.1
+
+New versions available:
+  - duroxide: [new_version] ✨
+  - duroxide-pg-opt: [new_tag] ✨
+
+Would you like to update to the new versions? (y/n)
+```
+
+**If user approves updates:**
+
+Update `Cargo.toml` dependencies:
+```toml
+# Example update
+duroxide = "NEW_VERSION"
+duroxide-pg-opt = { git = "ssh://git@github.com/Azure/duroxide-pg-opt.git", tag = "NEW_TAG", package = "duroxide-pg-opt" }
+```
+
+Then run:
+```bash
+cargo update -p duroxide
+cargo update -p duroxide-pg-opt
+```
+
+## Step 2: Build and Clean Warnings
+
+### 2.1 Build the Extension
+```bash
+cargo build --features pg17
+```
+
+- Check for compilation errors
+- Note any new warnings
+
+### 2.2 Run Clippy
+```bash
+cargo clippy --features pg17 -- -W clippy::all
+```
+
+- Address all clippy warnings
+- Do NOT silence warnings with `#[allow(...)]` without understanding them
+
+### 2.3 Fix Warnings
+
+Follow the guidance in `@pg_durable-clean-warnings.md`:
+
+**❌ DO NOT:**
+- Add `#[allow(unused)]` without understanding why
+- Prefix with `_` just to silence warnings
+- Remove code that's part of public API
+
+**✅ DO:**
+- Investigate why code is unused
+- Check if it's used in feature gates or tests
+- Delete genuinely unused code
+- Use `_name` for trait-required but unused parameters
+
+### 2.4 Format Code
+```bash
+cargo fmt --all
+```
+
+### 2.5 Verify Clean Build
+```bash
+# Should produce no warnings
+cargo build --features pg17 2>&1 | grep -c "warning:" || echo "0 warnings"
+cargo clippy --features pg17 2>&1 | grep -c "warning:" || echo "0 warnings"
+```
+
+## Step 3: Update Documentation and Tests
+
+Follow `@pg_durable-update-docs-tests.md` for comprehensive documentation updates.
+
+### 3.1 Scan Changes
+```bash
+# See what changed since last release
+git log --oneline main..HEAD
+
+# Or if on main, see recent changes
+git log --oneline -20
+
+# See detailed diff
+git diff --stat HEAD~10..HEAD
+```
+
+### 3.2 Update Documentation
+
+Check and update as needed:
+- **USER_GUIDE.md** - Main user documentation
+- **README.md** - Project overview
+- **docs/api-reference.md** - API documentation
+
+### 3.3 Propose New Tests
+
+For each significant change, propose tests:
+- New DSL functions → E2E tests in `tests/e2e/sql/`
+- New operators → E2E tests with both variants
+- Bug fixes → Regression tests
+
+**Ask user before implementing tests:**
+```
+📋 Proposed Tests:
+
+Based on changes found, I recommend adding these tests:
+1. [Test description] - tests/e2e/sql/NN_name.sql
+2. [Test description] - tests/e2e/sql/NN_name.sql
+
+Would you like me to implement these tests? (y/n/select numbers)
+```
+
+## Step 4: Run Tests
+
+### 4.1 Unit Tests
+```bash
+./scripts/test-unit.sh
+```
+
+Expected output: All pgrx tests pass.
+
+### 4.2 Local E2E Tests
+```bash
+./scripts/test-e2e-local.sh
+```
+
+Expected output: All SQL tests show `TEST PASSED`.
+
+### 4.3 Handle Test Failures
+
+If tests fail:
+1. Review the error output
+2. Check `~/.pgrx/17.log` for background worker logs
+3. Fix issues and re-run
+4. Do NOT proceed to Docker/release until all tests pass
+
+## Step 5: Docker Testing (Optional)
+
+### 5.1 Ask User
+```
+✅ All local tests passed!
+
+Would you like to build and test the Docker container? (y/n)
+  - This will build a fresh Docker image with the extension
+  - Run E2E tests inside the container
+  - Useful for verifying the release will work in production
+```
+
+### 5.2 Build and Test Docker
+```bash
+# Build and run E2E tests in Docker
+./scripts/test-e2e-docker.sh --rebuild
+```
+
+This will:
+- Build a new Docker image with pg_durable
+- Start a container with PostgreSQL
+- Run all E2E tests
+- Report results
+
+### 5.3 Handle Docker Test Failures
+
+If Docker tests fail but local tests passed:
+- Check for environment differences
+- Review Docker logs: `docker logs <container_id>`
+- Ensure all dependencies are properly included
+
+## Step 6: Deploy to ACR (Optional)
+
+### 6.1 Ask User
+```
+✅ Docker tests passed!
+
+Would you like to push the image to Azure Container Registry? (y/n)
+  - Registry: ${ACR_REGISTRY:-toygresacr.azurecr.io}
+  - Image: ${ACR_IMAGE:-pg_durable}
+  
+Options:
+  1. Push as :latest
+  2. Push with version tag (e.g., :v0.1.0)
+  3. Skip
+```
+
+### 6.2 Login to ACR (if needed)
+```bash
+# Check if already logged in
+docker pull toygresacr.azurecr.io/pg_durable:latest 2>/dev/null && echo "Already logged in" || az acr login --name toygresacr
+```
+
+### 6.3 Deploy
+```bash
+# Push as latest
+./scripts/deploy-acr.sh
+
+# Or with a specific tag
+./scripts/deploy-acr.sh --tag v0.1.0
+
+# Force rebuild before push
+./scripts/deploy-acr.sh --rebuild --tag v0.1.0
+```
+
+### 6.4 Verify Deployment
+```bash
+# List images in registry
+az acr repository show-tags --name toygresacr --repository pg_durable --output table
+```
+
+## Step 7: Review, Commit, and Push
+
+### 7.1 Review All Changes
+
+Present changes to the user for review:
+```bash
+git status
+git diff --stat
+```
+
+**Ask user to review:**
+```
+📋 Changes Summary:
+
+Files modified:
+  - Cargo.toml (dependency updates)
+  - src/*.rs (import changes)
+  - [other files]
+
+Please review the changes above. 
+
+Options:
+  1. Show full diff (git diff)
+  2. Show diff for specific file
+  3. Accept changes and continue
+  4. Abort release
+```
+
+### 7.2 Show Detailed Diff (if requested)
+```bash
+# Full diff
+git diff
+
+# Specific file
+git diff path/to/file.rs
+```
+
+### 7.3 Compose Commit Message
+
+**Ask user for commit message:**
+```
+📝 Compose commit message:
+
+Suggested message based on changes:
+  "Update duroxide-pg-opt to vX.Y.Z
+
+  - Upgrade duroxide-pg-opt from vA.B.C to vX.Y.Z
+  - Update imports from duroxide_pg to duroxide_pg_opt
+  - [other changes]"
+
+Would you like to:
+  1. Use suggested message
+  2. Edit message
+  3. Cancel
+```
+
+### 7.4 Commit Changes (with user approval)
+```bash
+git add -A
+git commit -m "Your commit message here"
+```
+
+### 7.5 Merge to Main (if on feature branch)
+
+Check current branch:
+```bash
+git branch --show-current
+```
+
+If not on main:
+```bash
+# Checkout main
+git checkout main
+
+# Pull latest
+git pull origin main
+
+# Merge feature branch
+git merge <feature-branch>
+```
+
+### 7.6 Push to Remote
+
+**Ask user before pushing:**
+```
+🚀 Ready to push to remote:
+
+Branch: main
+Remote: origin
+Commits to push: [number]
+
+Would you like to push? (y/n)
+```
+
+```bash
+git push origin main
+```
+
+### 7.7 Create Release Tag (Optional)
+
+**Ask user about tagging:**
+```
+🏷️ Would you like to create a release tag? (y/n)
+
+Suggested tag: v0.1.X (based on version in Cargo.toml)
+```
+
+```bash
+# Create annotated tag
+git tag -a v0.1.X -m "Release v0.1.X: [description]"
+
+# Push tag
+git push origin v0.1.X
+```
+
+### 7.8 Verify Push
+```bash
+# Check remote status
+git log --oneline origin/main -5
+
+# Verify tag (if created)
+git ls-remote --tags origin | tail -5
+```
+
+## Checklist Summary
+
+### Pre-Release Checklist
+- [ ] Check for dependency updates (duroxide, duroxide-pg-opt)
+- [ ] Update dependencies if user approves
+- [ ] `cargo build --features pg17` - no errors
+- [ ] `cargo clippy --features pg17` - no warnings
+- [ ] `cargo fmt --all` - code formatted
+- [ ] Documentation reviewed and updated
+- [ ] New tests proposed and implemented (if applicable)
+- [ ] `./scripts/test-unit.sh` - all pass
+- [ ] `./scripts/test-e2e-local.sh` - all pass
+
+### Optional Deployment Checklist
+- [ ] `./scripts/test-e2e-docker.sh --rebuild` - all pass
+- [ ] `./scripts/deploy-acr.sh` - image pushed
+- [ ] Verify image in registry
+
+### Post-Release
+- [ ] User reviewed all changes
+- [ ] Changes committed with descriptive message
+- [ ] Merged to main (if on feature branch)
+- [ ] Pushed to remote
+- [ ] Tag created for release (optional)
+- [ ] Changelog updated (optional)
+
+## Common Issues
+
+### 1. Dependency Update Fails
+```bash
+# Clear cargo cache and retry
+cargo clean
+cargo update
+cargo build --features pg17
+```
+
+### 2. pgrx Version Mismatch
+If updating duroxide causes pgrx conflicts:
+- Check both use same pgrx version
+- May need to update pgrx in Cargo.toml
+
+### 3. Docker Build Fails
+```bash
+# Check Docker daemon is running
+docker info
+
+# Clean Docker cache
+docker builder prune -f
+
+# Rebuild from scratch
+docker build --no-cache -t pg_durable_e2e_test .
+```
+
+### 4. ACR Push Fails
+```bash
+# Re-authenticate
+az acr login --name toygresacr
+
+# Check network/permissions
+az acr show --name toygresacr --query "loginServer"
+```
+
+## ⚠️ IMPORTANT: User Approval Required
+
+**DO NOT** proceed with these actions without explicit user approval:
+- Updating dependencies in Cargo.toml
+- Implementing new tests
+- Building Docker images
+- Pushing to ACR
+- Committing changes
+- Merging to main
+- Pushing to remote
+- Creating tags
+
+Always present options and wait for user confirmation before proceeding.

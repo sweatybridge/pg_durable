@@ -122,4 +122,3 @@ pub async fn execute(ctx: ActivityContext, config_json: String) -> Result<String
     // 4xx are client errors - user should handle in workflow logic
     Ok(result.to_string())
 }
-

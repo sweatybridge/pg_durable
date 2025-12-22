@@ -8,7 +8,11 @@ use std::sync::Arc;
 pub const NAME: &str = "pg_durable::activity::execute-sql";
 
 /// Execute a SQL query and return results as JSON
-pub async fn execute(ctx: ActivityContext, pool: Arc<PgPool>, query: String) -> Result<String, String> {
+pub async fn execute(
+    ctx: ActivityContext,
+    pool: Arc<PgPool>,
+    query: String,
+) -> Result<String, String> {
     ctx.trace_info(format!("Executing SQL: {}", query));
 
     match sqlx::query(&query).fetch_all(pool.as_ref()).await {
@@ -23,15 +27,9 @@ pub async fn execute(ctx: ActivityContext, pool: Arc<PgPool>, query: String) -> 
                     if let Ok(val) = row.try_get::<String, _>(col_name) {
                         row_obj.insert(col_name.to_string(), serde_json::Value::String(val));
                     } else if let Ok(val) = row.try_get::<i64, _>(col_name) {
-                        row_obj.insert(
-                            col_name.to_string(),
-                            serde_json::Value::Number(val.into()),
-                        );
+                        row_obj.insert(col_name.to_string(), serde_json::Value::Number(val.into()));
                     } else if let Ok(val) = row.try_get::<i32, _>(col_name) {
-                        row_obj.insert(
-                            col_name.to_string(),
-                            serde_json::Value::Number(val.into()),
-                        );
+                        row_obj.insert(col_name.to_string(), serde_json::Value::Number(val.into()));
                     } else if let Ok(val) = row.try_get::<bool, _>(col_name) {
                         row_obj.insert(col_name.to_string(), serde_json::Value::Bool(val));
                     } else if let Ok(val) = row.try_get::<f64, _>(col_name) {
@@ -60,4 +58,3 @@ pub async fn execute(ctx: ActivityContext, pool: Arc<PgPool>, query: String) -> 
         }
     }
 }
-

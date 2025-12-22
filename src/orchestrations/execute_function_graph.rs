@@ -12,8 +12,8 @@ use duroxide::OrchestrationContext;
 
 use crate::activities;
 use crate::types::{
-    evaluate_condition, substitute_all, substitute_all_raw, FunctionGraph,
-    FunctionInput, FunctionNode, SystemVars,
+    evaluate_condition, substitute_all, substitute_all_raw, FunctionGraph, FunctionInput,
+    FunctionNode, SystemVars,
 };
 
 /// Orchestration name for ExecuteFunctionGraph
@@ -30,10 +30,7 @@ struct ExecutionContext {
 }
 
 /// Execute a complete function graph
-pub async fn execute(
-    ctx: OrchestrationContext,
-    input_json: String,
-) -> Result<String, String> {
+pub async fn execute(ctx: OrchestrationContext, input_json: String) -> Result<String, String> {
     let input: FunctionInput = serde_json::from_str(&input_json)
         .map_err(|e| format!("Invalid orchestration input: {}", e))?;
 
@@ -55,7 +52,10 @@ pub async fn execute(
     }
 
     let graph_json = ctx
-        .schedule_activity(activities::load_function_graph::NAME, input.instance_id.clone())
+        .schedule_activity(
+            activities::load_function_graph::NAME,
+            input.instance_id.clone(),
+        )
         .into_activity()
         .await?;
 
@@ -145,7 +145,8 @@ pub async fn execute_subtree(
         label: None,
     };
 
-    let result = execute_function_node_with_vars(&ctx, &graph, node_id, &mut results, &exec_ctx).await?;
+    let result =
+        execute_function_node_with_vars(&ctx, &graph, node_id, &mut results, &exec_ctx).await?;
 
     ctx.trace_info(format!("ExecuteSubtree: node {} completed", node_id));
     Ok(result)
@@ -182,8 +183,7 @@ async fn execute_function_node_with_vars(
         .into_activity()
         .await;
 
-    let execute_result =
-        execute_node_inner(ctx, graph, node_id, node, results, exec_ctx).await;
+    let execute_result = execute_node_inner(ctx, graph, node_id, node, results, exec_ctx).await;
 
     // Update node with final status and result
     match &execute_result {
@@ -378,7 +378,11 @@ const BREAK_SENTINEL: &str = "__break__";
 /// Check if a result contains a break signal
 fn is_break_signal(result: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(result)
-        .map(|v| v.get(BREAK_SENTINEL).and_then(|b| b.as_bool()).unwrap_or(false))
+        .map(|v| {
+            v.get(BREAK_SENTINEL)
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false)
+        })
         .unwrap_or(false)
 }
 
@@ -413,7 +417,10 @@ async fn execute_loop_node(
     // Check for break signal from body
     if is_break_signal(&body_result) {
         let break_value = extract_break_value(&body_result);
-        ctx.trace_info(format!("Loop terminated by break with value: {}", break_value));
+        ctx.trace_info(format!(
+            "Loop terminated by break with value: {}",
+            break_value
+        ));
         return Ok(break_value);
     }
 
@@ -423,7 +430,11 @@ async fn execute_loop_node(
             if let Some(condition_node_id) = config["condition_node"].as_str() {
                 ctx.trace_info("Evaluating loop condition");
                 let condition_result = Box::pin(execute_function_node_with_vars(
-                    ctx, graph, condition_node_id, results, exec_ctx,
+                    ctx,
+                    graph,
+                    condition_node_id,
+                    results,
+                    exec_ctx,
                 ))
                 .await?;
 
@@ -452,9 +463,7 @@ async fn execute_loop_node(
 
     // duroxide 0.1.1: continue_as_new returns an awaitable future - return it directly
     return ctx
-        .continue_as_new(
-            serde_json::to_string(&new_input).unwrap_or(graph.instance_id.clone()),
-        )
+        .continue_as_new(serde_json::to_string(&new_input).unwrap_or(graph.instance_id.clone()))
         .await
         .map(|_| body_result)
         .map_err(|e| format!("continue_as_new failed: {:?}", e));
@@ -470,7 +479,13 @@ async fn execute_break_node(
         .as_ref()
         .and_then(|config_str| serde_json::from_str::<serde_json::Value>(config_str).ok())
         .and_then(|config| config.get("break_value").cloned())
-        .and_then(|v| if v.is_null() { None } else { v.as_str().map(|s| s.to_string()) });
+        .and_then(|v| {
+            if v.is_null() {
+                None
+            } else {
+                v.as_str().map(|s| s.to_string())
+            }
+        });
 
     ctx.trace_info(format!(
         "BREAK node {} executed with value: {:?}",
@@ -498,8 +513,8 @@ async fn execute_if_node(
         .query
         .as_ref()
         .ok_or_else(|| format!("IF node {} has no config", node_id))?;
-    let config: serde_json::Value = serde_json::from_str(config_str)
-        .map_err(|e| format!("Invalid IF config: {}", e))?;
+    let config: serde_json::Value =
+        serde_json::from_str(config_str).map_err(|e| format!("Invalid IF config: {}", e))?;
 
     let condition_node_id = config["condition_node"]
         .as_str()
@@ -558,8 +573,8 @@ async fn execute_join_node(
 
     ctx.trace_info("Executing JOIN branches in parallel");
 
-    let graph_json = serde_json::to_string(&graph)
-        .map_err(|e| format!("Failed to serialize graph: {}", e))?;
+    let graph_json =
+        serde_json::to_string(&graph).map_err(|e| format!("Failed to serialize graph: {}", e))?;
     let results_json = serde_json::to_string(&results)
         .map_err(|e| format!("Failed to serialize results: {}", e))?;
 
@@ -659,8 +674,8 @@ async fn execute_race_node(
 
     ctx.trace_info("Executing RACE branches in parallel (first wins)");
 
-    let graph_json = serde_json::to_string(&graph)
-        .map_err(|e| format!("Failed to serialize graph: {}", e))?;
+    let graph_json =
+        serde_json::to_string(&graph).map_err(|e| format!("Failed to serialize graph: {}", e))?;
     let results_json = serde_json::to_string(&results)
         .map_err(|e| format!("Failed to serialize results: {}", e))?;
 
@@ -722,8 +737,8 @@ async fn execute_http_node(
         .ok_or_else(|| format!("HTTP node {} has no config", node_id))?;
 
     // Parse config to substitute variables in body and URL
-    let mut config: serde_json::Value = serde_json::from_str(config_str)
-        .map_err(|e| format!("Invalid HTTP config: {}", e))?;
+    let mut config: serde_json::Value =
+        serde_json::from_str(config_str).map_err(|e| format!("Invalid HTTP config: {}", e))?;
 
     // Substitute variables in body if present
     if let Some(body) = config.get("body").and_then(|b| b.as_str()) {
@@ -786,8 +801,8 @@ async fn execute_signal_node(
         .as_ref()
         .ok_or_else(|| format!("SIGNAL node {} has no config", node_id))?;
 
-    let config: serde_json::Value = serde_json::from_str(config_str)
-        .map_err(|e| format!("Invalid SIGNAL config: {}", e))?;
+    let config: serde_json::Value =
+        serde_json::from_str(config_str).map_err(|e| format!("Invalid SIGNAL config: {}", e))?;
 
     let signal_name = config["signal_name"]
         .as_str()
@@ -852,4 +867,3 @@ async fn execute_signal_node(
 
     Ok(result_str)
 }
-

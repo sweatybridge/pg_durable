@@ -33,6 +33,15 @@ This directory contains structured prompts for LLMs working on the pg_durable co
    - Pre-commit checklist
    - Deploying to ACR after merge
 
+### Release
+
+5. **[pg_durable-release.md](pg_durable-release.md)**
+   - Check for duroxide/duroxide-pg-opt dependency updates
+   - Build, clippy, and clean warnings
+   - Update documentation and tests
+   - Run unit and E2E tests
+   - Optional Docker build and ACR deployment
+
 ## How to Use These Prompts
 
 ### For LLM Assistants
@@ -78,6 +87,17 @@ These prompts follow consistent patterns:
 1. @pg_durable-update-docs-tests.md  - Review docs, propose tests
 2. @pg_durable-clean-warnings.md     - Clean up any code issues found
 3. @pg_durable-merge-main.md         - Commit and push
+```
+
+### Release Workflow
+```
+1. @pg_durable-release.md            - Full release checklist:
+   - Check dependency updates (duroxide, duroxide-pg-opt)
+   - Build, clippy, clean warnings
+   - Update docs and tests
+   - Run unit + E2E tests
+   - Optional: Docker build & test
+   - Optional: Push to ACR
 ```
 
 ## Key Directories

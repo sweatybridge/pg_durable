@@ -99,4 +99,3 @@ pub async fn execute(
 
     serde_json::to_string(&graph).map_err(|e| format!("Failed to serialize graph: {}", e))
 }
-
