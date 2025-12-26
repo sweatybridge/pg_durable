@@ -1,5 +1,8 @@
 # TODO 
 
+- Comments on spec-sercurity-model
+    - get GPT5.2 and Gemini 3 to review
+    - think about how the vars work with RLS, only admin can set/read?
 - Configurable multiple background workers via GUC (pg_durable.worker_count) for horizontal scaling;
 - Function templates
 - [ ] Implement Parameterized Queries (See [Proposal](docs/parameterized_queries_proposal.md))

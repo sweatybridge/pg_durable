@@ -119,49 +119,44 @@ ensure_config() {
 
 # Function to start server
 start_server() {
-    if ! "$PG_ISREADY" -h localhost -p $PG_PORT &>/dev/null; then
-        echo -e "${YELLOW}Starting PostgreSQL...${NC}"
-        
-        # Clean start if requested
-        if [ "$CLEAN_START" = true ] && [ -d "$DATA_DIR" ]; then
-            echo "Removing old data directory..."
-            rm -rf "$DATA_DIR"
-        fi
-        
-        # Initialize if needed
-        if [ ! -d "$DATA_DIR" ]; then
-            echo "Initializing database..."
-            "$PGRX_BIN/initdb" -D "$DATA_DIR" --no-locale -E UTF8 >/dev/null 2>&1
-        fi
-        
-        # Ensure config is correct (works for both new and existing data dirs)
-        ensure_config
-        
-        # Install extension
-        echo "Building and installing extension..."
-        cd "$PROJECT_DIR"
-        cargo pgrx install --pg-config="$PG_CONFIG" >/dev/null 2>&1
-        
-        # Start server
-        "$PG_CTL" -D "$DATA_DIR" -l "$LOG_FILE" start >/dev/null 2>&1
-        sleep 2
-        
-        # Drop and recreate extension (picks up schema changes)
-        "$PSQL" -h localhost -p $PG_PORT -d $PG_DB -c "DROP EXTENSION IF EXISTS pg_durable CASCADE; CREATE EXTENSION pg_durable;" >/dev/null 2>&1
-    else
-        # Server already running - check if config needs update (requires restart)
-        if ! grep -q "^shared_preload_libraries.*pg_durable" "$DATA_DIR/postgresql.conf" 2>/dev/null; then
-            echo -e "${YELLOW}Restarting PostgreSQL to load pg_durable worker...${NC}"
-            stop_server
-            ensure_config
-            "$PG_CTL" -D "$DATA_DIR" -l "$LOG_FILE" start >/dev/null 2>&1
-            sleep 2
-        fi
-        # Reinstall extension
-        cd "$PROJECT_DIR"
-        cargo pgrx install --pg-config="$PG_CONFIG" >/dev/null 2>&1
-        "$PSQL" -h localhost -p $PG_PORT -d $PG_DB -c "DROP EXTENSION IF EXISTS pg_durable CASCADE; CREATE EXTENSION pg_durable;" >/dev/null 2>&1
+    # Clean start if requested
+    if [ "$CLEAN_START" = true ] && [ -d "$DATA_DIR" ]; then
+        stop_server
+        echo "Removing old data directory..."
+        rm -rf "$DATA_DIR"
     fi
+    
+    # Build and install extension first (before starting server)
+    echo "Building and installing extension..."
+    cd "$PROJECT_DIR"
+    cargo pgrx install --pg-config="$PG_CONFIG" >/dev/null 2>&1
+    
+    # Initialize if needed
+    if [ ! -d "$DATA_DIR" ]; then
+        echo "Initializing database..."
+        "$PGRX_BIN/initdb" -D "$DATA_DIR" --no-locale -E UTF8 >/dev/null 2>&1
+    fi
+    
+    # Ensure config is correct
+    ensure_config
+    
+    # If server is running, we need to:
+    # 1. Drop duroxide schema (to clear any stale schema from previous duroxide-pg-opt version)
+    # 2. Restart server (so background worker reconnects with fresh cached plans)
+    if "$PG_ISREADY" -h localhost -p $PG_PORT &>/dev/null; then
+        # Drop schemas before restart (background worker will recreate on reconnect)
+        "$PSQL" -h localhost -p $PG_PORT -d $PG_DB -c "DROP SCHEMA IF EXISTS duroxide CASCADE; DROP EXTENSION IF EXISTS pg_durable CASCADE;" >/dev/null 2>&1
+        echo -e "${YELLOW}Restarting PostgreSQL to reload extension...${NC}"
+        stop_server
+    fi
+    
+    # Start server
+    echo -e "${YELLOW}Starting PostgreSQL...${NC}"
+    "$PG_CTL" -D "$DATA_DIR" -l "$LOG_FILE" start >/dev/null 2>&1
+    sleep 2
+    
+    # Create extension (duroxide schema will be created by background worker on first connect)
+    "$PSQL" -h localhost -p $PG_PORT -d $PG_DB -c "CREATE EXTENSION IF NOT EXISTS pg_durable;" >/dev/null 2>&1
 }
 
 # Cleanup on exit (unless --keep)
