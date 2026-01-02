@@ -59,9 +59,37 @@ cargo update -p duroxide
 cargo update -p duroxide-pg-opt
 ```
 
-## Step 2: Build and Clean Warnings
+## Step 2: Update Package Version (if releasing)
 
-### 2.1 Build the Extension
+### 2.1 Ask User About Version Bump
+
+If this is a release (not just a dependency update), ask:
+
+```
+📦 Version Update:
+
+Current version in Cargo.toml: X.Y.Z
+
+Would you like to bump the version? (y/n)
+  1. Patch bump (X.Y.Z → X.Y.Z+1) - for bug fixes, dependency updates
+  2. Minor bump (X.Y.Z → X.Y+1.0) - for new features
+  3. Major bump (X.Y.Z → X+1.0.0) - for breaking changes
+  4. Custom version
+  5. Skip version bump
+```
+
+### 2.2 Update Cargo.toml Version
+
+If user approves, update the version in `Cargo.toml`:
+```toml
+[package]
+name = "pg_durable"
+version = "NEW_VERSION"
+```
+
+## Step 3: Build and Clean Warnings
+
+### 3.1 Build the Extension
 ```bash
 cargo build --features pg17
 ```
@@ -69,7 +97,7 @@ cargo build --features pg17
 - Check for compilation errors
 - Note any new warnings
 
-### 2.2 Run Clippy
+### 3.2 Run Clippy
 ```bash
 cargo clippy --features pg17 -- -W clippy::all
 ```
@@ -77,7 +105,7 @@ cargo clippy --features pg17 -- -W clippy::all
 - Address all clippy warnings
 - Do NOT silence warnings with `#[allow(...)]` without understanding them
 
-### 2.3 Fix Warnings
+### 3.3 Fix Warnings
 
 Follow the guidance in `@pg_durable-clean-warnings.md`:
 
@@ -92,23 +120,23 @@ Follow the guidance in `@pg_durable-clean-warnings.md`:
 - Delete genuinely unused code
 - Use `_name` for trait-required but unused parameters
 
-### 2.4 Format Code
+### 3.4 Format Code
 ```bash
 cargo fmt --all
 ```
 
-### 2.5 Verify Clean Build
+### 3.5 Verify Clean Build
 ```bash
 # Should produce no warnings
 cargo build --features pg17 2>&1 | grep -c "warning:" || echo "0 warnings"
 cargo clippy --features pg17 2>&1 | grep -c "warning:" || echo "0 warnings"
 ```
 
-## Step 3: Update Documentation and Tests
+## Step 4: Update Documentation and Tests
 
 Follow `@pg_durable-update-docs-tests.md` for comprehensive documentation updates.
 
-### 3.1 Scan Changes
+### 4.1 Scan Changes
 ```bash
 # See what changed since last release
 git log --oneline main..HEAD
@@ -120,14 +148,14 @@ git log --oneline -20
 git diff --stat HEAD~10..HEAD
 ```
 
-### 3.2 Update Documentation
+### 4.2 Update Documentation
 
 Check and update as needed:
 - **USER_GUIDE.md** - Main user documentation
 - **README.md** - Project overview
 - **docs/api-reference.md** - API documentation
 
-### 3.3 Propose New Tests
+### 4.3 Propose New Tests
 
 For each significant change, propose tests:
 - New DSL functions → E2E tests in `tests/e2e/sql/`
@@ -145,23 +173,23 @@ Based on changes found, I recommend adding these tests:
 Would you like me to implement these tests? (y/n/select numbers)
 ```
 
-## Step 4: Run Tests
+## Step 5: Run Tests
 
-### 4.1 Unit Tests
+### 5.1 Unit Tests
 ```bash
 ./scripts/test-unit.sh
 ```
 
 Expected output: All pgrx tests pass.
 
-### 4.2 Local E2E Tests
+### 5.2 Local E2E Tests
 ```bash
 ./scripts/test-e2e-local.sh
 ```
 
 Expected output: All SQL tests show `TEST PASSED`.
 
-### 4.3 Handle Test Failures
+### 5.3 Handle Test Failures
 
 If tests fail:
 1. Review the error output
@@ -169,9 +197,9 @@ If tests fail:
 3. Fix issues and re-run
 4. Do NOT proceed to Docker/release until all tests pass
 
-## Step 5: Docker Testing (Optional)
+## Step 6: Docker Testing (Optional)
 
-### 5.1 Ask User
+### 6.1 Ask User
 ```
 ✅ All local tests passed!
 
@@ -181,7 +209,7 @@ Would you like to build and test the Docker container? (y/n)
   - Useful for verifying the release will work in production
 ```
 
-### 5.2 Build and Test Docker
+### 6.2 Build and Test Docker
 ```bash
 # Build and run E2E tests in Docker
 ./scripts/test-e2e-docker.sh --rebuild
@@ -193,16 +221,16 @@ This will:
 - Run all E2E tests
 - Report results
 
-### 5.3 Handle Docker Test Failures
+### 6.3 Handle Docker Test Failures
 
 If Docker tests fail but local tests passed:
 - Check for environment differences
 - Review Docker logs: `docker logs <container_id>`
 - Ensure all dependencies are properly included
 
-## Step 6: Deploy to ACR (Optional)
+## Step 7: Deploy to ACR (Optional)
 
-### 6.1 Ask User
+### 7.1 Ask User
 ```
 ✅ Docker tests passed!
 
@@ -222,13 +250,13 @@ If user selects option 2 or 3, ask for the version tag:
 Enter version tag (e.g., v0.1.6): 
 ```
 
-### 6.2 Login to ACR (if needed)
+### 7.2 Login to ACR (if needed)
 ```bash
 # Check if already logged in
 docker pull toygresacr.azurecr.io/pg_durable:latest 2>/dev/null && echo "Already logged in" || az acr login --name toygresacr
 ```
 
-### 6.3 Deploy
+### 7.3 Deploy
 ```bash
 # Push as latest
 ./scripts/deploy-acr.sh
@@ -240,15 +268,15 @@ docker pull toygresacr.azurecr.io/pg_durable:latest 2>/dev/null && echo "Already
 ./scripts/deploy-acr.sh --rebuild --tag v0.1.0
 ```
 
-### 6.4 Verify Deployment
+### 7.4 Verify Deployment
 ```bash
 # List images in registry
 az acr repository show-tags --name toygresacr --repository pg_durable --output table
 ```
 
-## Step 7: Review, Commit, and Push
+## Step 8: Review, Commit, and Push
 
-### 7.1 Review All Changes
+### 8.1 Review All Changes
 
 Present changes to the user for review:
 ```bash
@@ -261,7 +289,7 @@ git diff --stat
 📋 Changes Summary:
 
 Files modified:
-  - Cargo.toml (dependency updates)
+  - Cargo.toml (dependency updates, version bump)
   - src/*.rs (import changes)
   - [other files]
 
@@ -274,7 +302,7 @@ Options:
   4. Abort release
 ```
 
-### 7.2 Show Detailed Diff (if requested)
+### 8.2 Show Detailed Diff (if requested)
 ```bash
 # Full diff
 git diff
@@ -283,17 +311,18 @@ git diff
 git diff path/to/file.rs
 ```
 
-### 7.3 Compose Commit Message
+### 8.3 Compose Commit Message
 
 **Ask user for commit message:**
 ```
 📝 Compose commit message:
 
 Suggested message based on changes:
-  "Update duroxide-pg-opt to vX.Y.Z
+  "Release v0.1.X: Update duroxide dependencies
 
+  - Bump version from X.Y.Z to X.Y.Z+1
+  - Upgrade duroxide from vA.B.C to vX.Y.Z
   - Upgrade duroxide-pg-opt from vA.B.C to vX.Y.Z
-  - Update imports from duroxide_pg to duroxide_pg_opt
   - [other changes]"
 
 Would you like to:
@@ -302,13 +331,13 @@ Would you like to:
   3. Cancel
 ```
 
-### 7.4 Commit Changes (with user approval)
+### 8.4 Commit Changes (with user approval)
 ```bash
 git add -A
 git commit -m "Your commit message here"
 ```
 
-### 7.5 Merge to Main (if on feature branch)
+### 8.5 Merge to Main (if on feature branch)
 
 Check current branch:
 ```bash
@@ -327,7 +356,7 @@ git pull origin main
 git merge <feature-branch>
 ```
 
-### 7.6 Push to Remote
+### 8.6 Push to Remote
 
 **Ask user before pushing:**
 ```
@@ -344,7 +373,7 @@ Would you like to push? (y/n)
 git push origin main
 ```
 
-### 7.7 Create Release Tag (Optional)
+### 8.7 Create Release Tag (Optional)
 
 **Ask user about tagging:**
 ```
@@ -361,7 +390,7 @@ git tag -a v0.1.X -m "Release v0.1.X: [description]"
 git push origin v0.1.X
 ```
 
-### 7.8 Verify Push
+### 8.8 Verify Push
 ```bash
 # Check remote status
 git log --oneline origin/main -5
@@ -370,9 +399,9 @@ git log --oneline origin/main -5
 git ls-remote --tags origin | tail -5
 ```
 
-## Step 8: Final Verification
+## Step 9: Final Verification
 
-### 8.1 Display Expected Version
+### 9.1 Display Expected Version
 
 At the end of the release, display the expected version string for verification:
 
@@ -390,7 +419,7 @@ The version should match the build timestamp from:
   - ACR image: the image was pushed at [timestamp]
 ```
 
-### 8.2 Get Version Info
+### 9.2 Get Version Info
 ```bash
 # Get version from Cargo.toml
 grep '^version' Cargo.toml
@@ -404,6 +433,7 @@ docker inspect pg_durable:latest --format '{{.Created}}'
 ### Pre-Release Checklist
 - [ ] Check for dependency updates (duroxide, duroxide-pg-opt)
 - [ ] Update dependencies if user approves
+- [ ] Bump version in Cargo.toml if releasing
 - [ ] `cargo build --features pg17` - no errors
 - [ ] `cargo clippy --features pg17` - no warnings
 - [ ] `cargo fmt --all` - code formatted
