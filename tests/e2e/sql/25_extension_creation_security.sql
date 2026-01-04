@@ -5,11 +5,7 @@
 -- Expected: Both security conditions are enforced
 
 -- Note: This test drops and recreates the extension to test installation security
--- Save extension state to restore later if needed
-CREATE TEMP TABLE _test_existing_instances AS 
-SELECT * FROM df.instances WHERE 1=0; -- Just schema, no data needed
-
--- Clean up: Drop extension to test creation
+-- Any running instances will be lost, but E2E tests are self-contained
 DROP EXTENSION IF EXISTS pg_durable CASCADE;
 
 -- ============================================================================
@@ -117,8 +113,5 @@ BEGIN
     
     RAISE NOTICE 'Extension restored successfully';
 END $$;
-
--- Cleanup temp table
-DROP TABLE _test_existing_instances;
 
 SELECT 'TEST PASSED' AS result;
