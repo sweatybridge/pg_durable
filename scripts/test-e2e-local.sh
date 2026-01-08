@@ -6,13 +6,17 @@
 # Options:
 #   --keep       Leave PostgreSQL running after tests for investigation
 #   --clean      Start with fresh database (wipes all data)
+#   --verbose    Show all NOTICE messages and full error output
+#   -v           Same as --verbose
 #
 # Examples:
 #   ./scripts/test-e2e-local.sh                    # Run all tests, stop server after
 #   ./scripts/test-e2e-local.sh --keep             # Run all tests, keep server running
+#   ./scripts/test-e2e-local.sh --verbose          # Run all tests with NOTICE messages
 #   ./scripts/test-e2e-local.sh 04_parallel        # Run matching test
 #   ./scripts/test-e2e-local.sh 04_parallel 5      # Run 5 times
 #   ./scripts/test-e2e-local.sh --keep 04_parallel # Run test, keep server
+#   ./scripts/test-e2e-local.sh -v 27_database_guc # Run test with verbose output
 
 set -e
 
@@ -23,6 +27,7 @@ SQL_DIR="$PROJECT_DIR/tests/e2e/sql"
 # Defaults
 KEEP_RUNNING=false
 CLEAN_START=false
+VERBOSE=false
 TEST_FILTER=""
 REPEAT_COUNT=1
 
@@ -35,6 +40,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean)
             CLEAN_START=true
+            shift
+            ;;
+        --verbose|-v)
+            VERBOSE=true
             shift
             ;;
         *)
@@ -87,6 +96,9 @@ if [ "$REPEAT_COUNT" -gt 1 ]; then
 fi
 if [ "$KEEP_RUNNING" = true ]; then
     echo -e "Mode: ${YELLOW}Keep server running after tests${NC}"
+fi
+if [ "$VERBOSE" = true ]; then
+    echo -e "Mode: ${YELLOW}Verbose output (show NOTICE messages)${NC}"
 fi
 echo "================================================"
 echo ""
@@ -206,25 +218,41 @@ for run in $(seq 1 $REPEAT_COUNT); do
         
         echo -n "  $test_name ... "
         
-        output=$("$PSQL" -h localhost -p $PG_PORT -d $PG_DB -v ON_ERROR_STOP=1 -f "$test_file" 2>&1)
-        exit_code=$?
-        
-        if [ $exit_code -eq 0 ]; then
-            if echo "$output" | grep -q "TEST PASSED"; then
-                echo -e "${GREEN}PASS${NC}"
+        # In verbose mode, show output as it happens
+        if [ "$VERBOSE" = true ]; then
+            echo ""  # Newline before verbose output
+            "$PSQL" -h localhost -p $PG_PORT -d $PG_DB -v ON_ERROR_STOP=1 -v client_min_messages=notice -f "$test_file"
+            exit_code=$?
+
+            if [ $exit_code -eq 0 ]; then
+                echo -e "  ${GREEN}PASS${NC}"
                 PASSED=$((PASSED + 1))
-            elif echo "$output" | grep -q "TEST FAILED"; then
-                echo -e "${RED}FAIL${NC}"
-                echo "$output" | grep -E "(NOTICE|ERROR|TEST FAILED)" | tail -15
-                FAILED=$((FAILED + 1))
             else
-                echo -e "${GREEN}PASS${NC}"
-                PASSED=$((PASSED + 1))
+                echo -e "  ${RED}FAIL${NC}"
+                FAILED=$((FAILED + 1))
             fi
         else
-            echo -e "${RED}FAIL${NC}"
-            echo "$output" | grep -E "(NOTICE|ERROR)" | tail -15
-            FAILED=$((FAILED + 1))
+            # Non-verbose mode: capture output and show summary
+            output=$("$PSQL" -h localhost -p $PG_PORT -d $PG_DB -v ON_ERROR_STOP=1 -f "$test_file" 2>&1)
+            exit_code=$?
+            
+            if [ $exit_code -eq 0 ]; then
+                if echo "$output" | grep -q "TEST PASSED"; then
+                    echo -e "${GREEN}PASS${NC}"
+                    PASSED=$((PASSED + 1))
+                elif echo "$output" | grep -q "TEST FAILED"; then
+                    echo -e "${RED}FAIL${NC}"
+                    echo "$output" | grep -E "(NOTICE|ERROR|TEST FAILED)" | tail -15
+                    FAILED=$((FAILED + 1))
+                else
+                    echo -e "${GREEN}PASS${NC}"
+                    PASSED=$((PASSED + 1))
+                fi
+            else
+                echo -e "${RED}FAIL${NC}"
+                echo "$output" | grep -E "(NOTICE|ERROR)" | tail -15
+                FAILED=$((FAILED + 1))
+            fi
         fi
     done
     
