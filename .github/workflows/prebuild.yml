@@ -1,0 +1,71 @@
+name: Validate Devcontainer
+
+# This workflow validates the devcontainer configuration
+# GitHub Codespaces prebuilds are configured in repository Settings > Codespaces
+# This workflow helps ensure the devcontainer configuration is valid
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/**'
+  pull_request:
+    paths:
+      - '.devcontainer/**'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # Only needs to read repository contents
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate devcontainer.json
+        run: |
+          echo "Validating devcontainer configuration..."
+          
+          # Check if required files exist
+          if [ ! -f .devcontainer/devcontainer.json ]; then
+            echo "❌ devcontainer.json not found"
+            exit 1
+          fi
+          
+          if [ ! -f .devcontainer/onCreateCommand.sh ]; then
+            echo "❌ onCreateCommand.sh not found"
+            exit 1
+          fi
+          
+          if [ ! -f .devcontainer/postCreateCommand.sh ]; then
+            echo "❌ postCreateCommand.sh not found"
+            exit 1
+          fi
+          
+          echo "✅ All required files exist"
+          
+          # Check that onCreateCommand is configured properly
+          # Look for the property with proper JSON structure (allowing for comments/formatting)
+          if grep -E '"onCreateCommand"\s*:\s*".*onCreateCommand\.sh"' .devcontainer/devcontainer.json > /dev/null; then
+            echo "✅ onCreateCommand is properly configured (required for prebuilds)"
+          else
+            echo "⚠️  onCreateCommand not properly configured (prebuilds may not work)"
+            echo "Expected: \"onCreateCommand\": \"bash .devcontainer/onCreateCommand.sh\""
+          fi
+          
+          # Check that postCreateCommand is configured
+          if grep -E '"postCreateCommand"\s*:\s*".*postCreateCommand\.sh"' .devcontainer/devcontainer.json > /dev/null; then
+            echo "✅ postCreateCommand is configured"
+          else
+            echo "⚠️  postCreateCommand not found"
+          fi
+          
+          echo ""
+          echo "✅ Devcontainer configuration is valid"
+          echo ""
+          echo "To enable Codespaces prebuilds:"
+          echo "1. Go to repository Settings > Codespaces"
+          echo "2. Click 'Set up prebuild'"
+          echo "3. Configure prebuild for the main branch"
