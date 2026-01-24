@@ -129,8 +129,7 @@ async fn run_duroxide_runtime() {
     let orchestrations = create_orchestration_registry();
 
     let duroxide_runtime =
-        runtime::Runtime::start_with_store(store.clone(), Arc::new(activities), orchestrations)
-            .await;
+        runtime::Runtime::start_with_store(store.clone(), activities, orchestrations).await;
 
     log!("pg_durable: duroxide runtime started, processing durable functions...");
 

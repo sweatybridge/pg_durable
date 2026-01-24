@@ -56,7 +56,6 @@ pub async fn execute(ctx: OrchestrationContext, input_json: String) -> Result<St
             activities::load_function_graph::NAME,
             input.instance_id.clone(),
         )
-        .into_activity()
         .await?;
 
     let graph: FunctionGraph = serde_json::from_str(&graph_json)
@@ -92,7 +91,6 @@ pub async fn execute(ctx: OrchestrationContext, input_json: String) -> Result<St
                     activities::update_instance_status::NAME,
                     status_input.to_string(),
                 )
-                .into_activity()
                 .await;
         }
         Err(err) => {
@@ -106,7 +104,6 @@ pub async fn execute(ctx: OrchestrationContext, input_json: String) -> Result<St
                     activities::update_instance_status::NAME,
                     status_input.to_string(),
                 )
-                .into_activity()
                 .await;
         }
     }
@@ -180,7 +177,6 @@ async fn execute_function_node_with_vars(
             activities::update_node_status::NAME,
             running_input.to_string(),
         )
-        .into_activity()
         .await;
 
     let execute_result = execute_node_inner(ctx, graph, node_id, node, results, exec_ctx).await;
@@ -198,7 +194,6 @@ async fn execute_function_node_with_vars(
                     activities::update_node_status::NAME,
                     completed_input.to_string(),
                 )
-                .into_activity()
                 .await;
         }
         Err(err) => {
@@ -212,7 +207,6 @@ async fn execute_function_node_with_vars(
                     activities::update_node_status::NAME,
                     failed_input.to_string(),
                 )
-                .into_activity()
                 .await;
         }
     }
@@ -273,7 +267,6 @@ async fn execute_sql_node(
 
     let result = ctx
         .schedule_activity(activities::execute_sql::NAME, final_query)
-        .into_activity()
         .await?;
 
     if let Some(name) = &node.result_name {
@@ -334,9 +327,7 @@ async fn execute_sleep_node(
         .map_err(|_| format!("Invalid sleep duration: {seconds_str}"))?;
 
     ctx.trace_info(format!("Sleeping for {seconds} seconds"));
-    ctx.schedule_timer(Duration::from_secs(seconds))
-        .into_timer()
-        .await;
+    ctx.schedule_timer(Duration::from_secs(seconds)).await;
 
     Ok(format!(r#"{{"slept": true, "seconds": {seconds}}}"#))
 }
@@ -364,9 +355,7 @@ async fn execute_wait_schedule_node(
     ctx.trace_info(format!(
         "Waiting {wait_seconds} seconds until schedule: {cron_expr}"
     ));
-    ctx.schedule_timer(Duration::from_secs(wait_seconds))
-        .into_timer()
-        .await;
+    ctx.schedule_timer(Duration::from_secs(wait_seconds)).await;
 
     Ok(r#"{"scheduled": true}"#.to_string())
 }
@@ -620,19 +609,14 @@ async fn execute_join_node(
     // Use ctx.join() - Duroxide's proper join method for parallel execution
     let results_vec = ctx.join(durable_futures).await;
 
-    // Process results - DurableOutput is an enum wrapping the result
+    // Process results - join now returns Vec<Result<String, String>> directly
     let mut join_results = Vec::new();
     for (i, result) in results_vec.into_iter().enumerate() {
         match result {
-            duroxide::DurableOutput::SubOrchestration(Ok(r)) => join_results.push(r),
-            duroxide::DurableOutput::SubOrchestration(Err(e)) => {
+            Ok(r) => join_results.push(r),
+            Err(e) => {
                 return Err(format!("JOIN branch {} failed: {}", i + 1, e));
             }
-            duroxide::DurableOutput::Activity(Ok(r)) => join_results.push(r),
-            duroxide::DurableOutput::Activity(Err(e)) => {
-                return Err(format!("JOIN branch {} failed: {}", i + 1, e));
-            }
-            _ => return Err(format!("JOIN branch {} returned unexpected type", i + 1)),
         }
     }
 
@@ -694,20 +678,18 @@ async fn execute_race_node(
     let right_fut = ctx.schedule_sub_orchestration(SUBTREE_NAME, right_input);
 
     // Use ctx.select2() - first to complete wins
-    let (_winner_idx, output) = ctx.select2(left_fut, right_fut).await;
-
-    let result = match output {
-        duroxide::DurableOutput::SubOrchestration(Ok(r)) => {
-            ctx.trace_info("RACE completed - first result received");
+    // select2 now returns Either2<Left, Right> instead of (winner_idx, DurableOutput)
+    let result = match ctx.select2(left_fut, right_fut).await {
+        duroxide::Either2::First(Ok(r)) => {
+            ctx.trace_info("RACE completed - left branch won");
             Ok(r)
         }
-        duroxide::DurableOutput::SubOrchestration(Err(e)) => Err(format!("RACE failed: {e}")),
-        duroxide::DurableOutput::Activity(Ok(r)) => {
-            ctx.trace_info("RACE completed - first result received");
+        duroxide::Either2::First(Err(e)) => Err(format!("RACE left branch failed: {e}")),
+        duroxide::Either2::Second(Ok(r)) => {
+            ctx.trace_info("RACE completed - right branch won");
             Ok(r)
         }
-        duroxide::DurableOutput::Activity(Err(e)) => Err(format!("RACE failed: {e}")),
-        _ => Err("RACE returned unexpected type".to_string()),
+        duroxide::Either2::Second(Err(e)) => Err(format!("RACE right branch failed: {e}")),
     }?;
 
     // Store result if named
@@ -774,7 +756,6 @@ async fn execute_http_node(
 
     let result = ctx
         .schedule_activity(activities::execute_http::NAME, final_config)
-        .into_activity()
         .await?;
 
     // Store result if named
@@ -818,32 +799,30 @@ async fn execute_signal_node(
         let signal_fut = ctx.schedule_wait(signal_name);
         let timeout_fut = ctx.schedule_timer(Duration::from_secs(timeout_secs as u64));
 
-        let (winner_index, output) = ctx.select2(signal_fut, timeout_fut).await;
-
-        if winner_index == 0 {
-            // Signal received - extract data from DurableOutput::External
-            let data_str = match output {
-                duroxide::DurableOutput::External(s) => s,
-                _ => String::new(),
-            };
-            let data: serde_json::Value =
-                serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
-            serde_json::json!({
-                "signal_name": signal_name,
-                "timed_out": false,
-                "data": data
-            })
-        } else {
-            // Timeout
-            serde_json::json!({
-                "signal_name": signal_name,
-                "timed_out": true,
-                "data": null
-            })
+        // select2 now returns Either2<String, ()> instead of (winner_idx, DurableOutput)
+        match ctx.select2(signal_fut, timeout_fut).await {
+            duroxide::Either2::First(data_str) => {
+                // Signal received - data_str is String directly
+                let data: serde_json::Value =
+                    serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
+                serde_json::json!({
+                    "signal_name": signal_name,
+                    "timed_out": false,
+                    "data": data
+                })
+            }
+            duroxide::Either2::Second(()) => {
+                // Timeout
+                serde_json::json!({
+                    "signal_name": signal_name,
+                    "timed_out": true,
+                    "data": null
+                })
+            }
         }
     } else {
-        // Wait forever - into_event() awaits and returns String directly
-        let data_str = ctx.schedule_wait(signal_name).into_event().await;
+        // Wait forever - schedule_wait returns String directly now
+        let data_str = ctx.schedule_wait(signal_name).await;
         let data: serde_json::Value =
             serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
         serde_json::json!({
