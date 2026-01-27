@@ -23,7 +23,10 @@ fn init_tracing() {
         EnvFilter::new("warn,duroxide::orchestration=info,duroxide::activity=info")
     });
 
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(false) // Disable ANSI colors since logs go to file
+        .try_init();
 }
 
 /// Initialize the background worker
