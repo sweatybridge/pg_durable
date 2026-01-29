@@ -682,3 +682,66 @@ pub fn result(instance_id: &str) -> Option<String> {
     );
     Spi::get_one::<String>(&sql).ok().flatten()
 }
+
+/// Waits for a durable function to complete, returning its final status.
+/// Polls the instance status every 100ms until it reaches a terminal state
+/// (completed, failed, or cancelled) or the timeout is exceeded.
+///
+/// This is a helper function for pg_regress tests to simplify polling logic
+/// and ensure deterministic test output.
+///
+/// # Arguments
+/// * `instance_id` - The durable function instance ID to wait for
+/// * `timeout_seconds` - Maximum time to wait in seconds (default: 30)
+///
+/// # Returns
+/// The final status as a string: 'completed', 'failed', or 'cancelled'
+///
+/// # Errors
+/// Raises an error if the timeout is exceeded without reaching a terminal state
+#[pg_extern(schema = "df")]
+pub fn wait_for_completion(
+    instance_id: &str,
+    timeout_seconds: default!(i32, "30"),
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    if timeout_seconds <= 0 {
+        pgrx::error!("Timeout must be positive");
+    }
+
+    let max_attempts = timeout_seconds * 10; // Poll every 100ms
+    let mut attempts = 0;
+
+    loop {
+        // Query instance status
+        let sql = format!(
+            "SELECT status FROM df.instances WHERE id = '{}'",
+            instance_id.replace('\'', "''")
+        );
+
+        let status: Option<String> =
+            Spi::get_one(&sql).map_err(|e| format!("Failed to query status: {:?}", e))?;
+
+        if let Some(ref s) = status {
+            let s_lower = s.to_lowercase();
+            if s_lower == "completed" || s_lower == "failed" || s_lower == "cancelled" {
+                return Ok(s_lower);
+            }
+        } else {
+            return Err(format!("Instance not found: {}", instance_id).into());
+        }
+
+        attempts += 1;
+        if attempts >= max_attempts {
+            return Err(format!(
+                "Timeout after {}s waiting for instance {} (status: {}). Check if background worker is running.",
+                timeout_seconds,
+                instance_id,
+                status.unwrap_or_else(|| "unknown".to_string())
+            )
+            .into());
+        }
+
+        // Sleep 100ms
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}

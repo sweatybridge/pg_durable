@@ -15,7 +15,7 @@ pg_durable brings durable execution to PostgreSQL. Define long-running, fault-to
 
 ```sql
 -- A durable function that processes data in steps
-SELECT durable.start(
+SELECT df.start(
     'SELECT id FROM documents WHERE processed = false LIMIT 100' |=> 'batch'
     ~> 'UPDATE documents SET processed = true WHERE id = ANY($batch)'
 );
@@ -24,7 +24,7 @@ SELECT durable.start(
 ## How It Works
 
 1. **Define functions in SQL** using composable operators like `~>` (sequence) and `|=>` (name result)
-2. **Start functions** with `durable.start()` which returns an instance ID
+2. **Start functions** with `df.start()` which returns an instance ID
 3. **Runtime executes durably** — each step is checkpointed, survives crashes via replay
 4. **Query progress** anytime from standard PostgreSQL tables
 
@@ -68,7 +68,7 @@ GITHUB_TOKEN=ghp_your_token_here
 
 ```bash
 # Build and install the extension
-cargo pgrx install --release
+cargo pgrx install --release --pg-config $(cargo pgrx info pg-config pg17)
 
 # In PostgreSQL
 CREATE EXTENSION pg_durable;
@@ -89,9 +89,35 @@ CREATE EXTENSION pg_durable;
 All pull requests must pass the following checks before merging:
 
 1. **Format Check** — `cargo fmt --check`
-2. **Clippy & Tests** — `cargo clippy`, unit tests (`cargo pgrx test pg17`), and E2E tests
+2. **Clippy & Tests** — `cargo clippy`, unit tests (`cargo pgrx test pg17`), pg_regress tests, and E2E tests
 
 The CI workflow is defined in [.github/workflows/ci.yml](.github/workflows/ci.yml). It uses pgrx to download and manage PostgreSQL.
+
+## Testing
+
+pg_durable has two test suites:
+
+### pg_regress Tests (Standard PostgreSQL Regression Tests)
+
+Fast, deterministic tests for core DSL functionality using PostgreSQL's standard testing framework:
+
+```bash
+cd test/regress
+make installcheck
+```
+
+See [test/regress/README.md](test/regress/README.md) for details.
+
+### E2E Tests (Comprehensive Scenario Tests)
+
+Complex integration tests with Docker:
+
+```bash
+./scripts/test-e2e-local.sh              # All tests
+./scripts/test-e2e-local.sh 04_parallel  # Specific test
+```
+
+See [tests/e2e/](tests/e2e/) for details.
 
 ## Documentation
 
@@ -122,7 +148,7 @@ The runtime is powered by [duroxide](https://github.com/anthropics/duroxide), a 
 │  │                                                          │  │
 │  └──────────────────────────────────────────────────────────┘  │
 │                                                                │
-│  durable schema: nodes | instances | (duroxide internals)     │
+│  df schema: nodes | instances | (duroxide internals)          │
 └────────────────────────────────────────────────────────────────┘
 ```
 

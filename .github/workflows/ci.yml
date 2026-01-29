@@ -82,3 +82,26 @@ jobs:
 
       - name: Run E2E tests
         run: ./scripts/test-e2e-local.sh
+
+      - name: Run pg_regress tests
+        id: pg_regress
+        env:
+          PGDATABASE: contrib_regression
+        run: |
+          ./scripts/pg-start.sh
+          cd test/regress
+          make installcheck
+
+      - name: Upload pg_regress results on failure
+        if: steps.pg_regress.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pg_regress-results
+          path: |
+            test/regress/regression.out
+            test/regress/regression.diffs
+          if-no-files-found: ignore
+
+      - name: Stop PostgreSQL after pg_regress
+        if: steps.pg_regress.outcome != 'skipped'
+        run: ./scripts/pg-stop.sh

@@ -89,11 +89,28 @@ async fn run_duroxide_runtime() {
         DUROXIDE_SCHEMA
     );
 
-    let store = match PostgresProvider::new_with_schema(&pg_conn_str, Some(DUROXIDE_SCHEMA)).await {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            log!("pg_durable: failed to create PostgreSQL store: {}", e);
-            return;
+    // Retry connection with exponential backoff (useful for pg_regress tests where database may not exist yet)
+    let store = loop {
+        match PostgresProvider::new_with_schema(&pg_conn_str, Some(DUROXIDE_SCHEMA)).await {
+            Ok(s) => break Arc::new(s),
+            Err(e) => {
+                log!(
+                    "pg_durable: failed to create PostgreSQL store (will retry): {}",
+                    e
+                );
+
+                // Check for shutdown before retrying
+                if tokio::task::spawn_blocking(is_shutdown_requested)
+                    .await
+                    .unwrap_or(false)
+                {
+                    log!("pg_durable: shutdown requested during connection retry, exiting");
+                    return;
+                }
+
+                // Retry after 5 seconds
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
         }
     };
 
@@ -103,27 +120,43 @@ async fn run_duroxide_runtime() {
     );
 
     // Create connection pool with session variable marking workflow context
-    let pg_pool = match PgPoolOptions::new()
-        .max_connections(5)
-        .after_connect(|conn, _meta| {
-            Box::pin(async move {
-                // Mark this connection as being used by the workflow runtime
-                sqlx::query("SET df.in_workflow = 'true'")
-                    .execute(&mut *conn)
-                    .await?;
-                Ok(())
+    let pg_pool = loop {
+        match PgPoolOptions::new()
+            .max_connections(5)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    // Mark this connection as being used by the workflow runtime
+                    sqlx::query("SET df.in_workflow = 'true'")
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
             })
-        })
-        .connect(&pg_conn_str)
-        .await
-    {
-        Ok(pool) => {
-            log!("pg_durable: PostgreSQL connection pool created");
-            Arc::new(pool)
-        }
-        Err(e) => {
-            log!("pg_durable: failed to create PostgreSQL pool: {}", e);
-            Arc::new(PgPoolOptions::new().connect_lazy(&pg_conn_str).unwrap())
+            .connect(&pg_conn_str)
+            .await
+        {
+            Ok(pool) => {
+                log!("pg_durable: PostgreSQL connection pool created");
+                break Arc::new(pool);
+            }
+            Err(e) => {
+                log!(
+                    "pg_durable: failed to create PostgreSQL pool (will retry): {}",
+                    e
+                );
+
+                // Check for shutdown before retrying
+                if tokio::task::spawn_blocking(is_shutdown_requested)
+                    .await
+                    .unwrap_or(false)
+                {
+                    log!("pg_durable: shutdown requested during pool creation, exiting");
+                    return;
+                }
+
+                // Retry after 5 seconds
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
         }
     };
 

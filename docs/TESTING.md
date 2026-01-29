@@ -7,10 +7,27 @@ This guide covers all testing scenarios for pg_durable.
 | What | Command |
 |------|---------|
 | Unit tests | `./scripts/test-unit.sh` |
+| pg_regress tests | `cd test/regress && make installcheck` |
 | E2E tests (local) | `./scripts/test-e2e-local.sh` |
 | E2E tests (Docker) | `./scripts/test-e2e-docker.sh` |
 | Stop PostgreSQL | `./scripts/pg-stop.sh` |
 | Deploy to ACR | `./scripts/deploy-acr.sh` |
+
+## Test Suites Overview
+
+pg_durable has **three test suites**:
+
+1. **Unit Tests** — Rust tests using pgrx (`#[pg_test]`)
+2. **pg_regress Tests** — Standard PostgreSQL regression tests (deterministic, fast)
+3. **E2E Tests** — Comprehensive scenario tests with Docker (complex scenarios)
+
+### When to Use Each Suite
+
+| Suite | Use For | Characteristics |
+|-------|---------|-----------------|
+| Unit | Testing individual Rust functions | Fast, isolated |
+| pg_regress | Core DSL operators/functions | Deterministic, standard PostgreSQL testing |
+| E2E | Complex scenarios, HTTP, timing | Comprehensive, may include variable timing |
 
 ---
 
@@ -34,11 +51,48 @@ Runs Rust unit tests using `cargo pgrx test`. These test individual functions in
 
 ---
 
-## 2. E2E Tests
+## 2. pg_regress Tests
+
+Standard PostgreSQL regression tests for core DSL functionality. These tests are fast, deterministic, and use PostgreSQL's industry-standard testing framework.
+
+```bash
+# Prerequisites: Build and install the extension
+cargo pgrx install --release
+
+# Run all pg_regress tests
+cd test/regress
+make installcheck
+
+# Run specific test
+make installcheck REGRESS=simple
+
+# View test output
+cat regression.out
+
+# View diffs (on failure)
+cat regression.diffs
+```
+
+**What it tests:**
+- Core DSL operators: `~>`, `|=>`, `&`, `?>`, `!>`
+- DSL functions: `df.sql()`, `df.seq()`, `df.as()`, `df.join()`, `df.if()`
+- Helper functions: `df.wait_for_completion()`
+
+**Key features:**
+- Deterministic output (no UUIDs, timestamps, or variable timing)
+- Fast feedback (< 10 seconds for all tests)
+- Standard PostgreSQL testing approach
+- Familiar to PostgreSQL developers
+
+See [test/regress/README.md](../test/regress/README.md) for more details.
+
+---
+
+## 3. E2E Tests
 
 End-to-end tests that exercise the full system including the background worker.
 
-### 2a. Local E2E Tests
+### 3a. Local E2E Tests
 
 Fast iteration using local pgrx PostgreSQL. Best for development.
 
@@ -74,7 +128,7 @@ tail -f ~/.pgrx/17.log
 ./scripts/pg-stop.sh
 ```
 
-### 2b. Docker E2E Tests
+### 3b. Docker E2E Tests
 
 Tests in a linux/amd64 container. Matches production environment.
 

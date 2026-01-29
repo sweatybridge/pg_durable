@@ -1,6 +1,6 @@
 # pg_durable Makefile
 
-.PHONY: build test test-unit test-e2e clean docker-build docker-push
+.PHONY: build test test-unit test-e2e installcheck check clean docker-build docker-push
 
 # Default target
 all: build
@@ -20,6 +20,14 @@ test-unit:
 # Run only E2E tests (Docker-based)
 test-e2e:
 	./scripts/test.sh --e2e
+
+# Run pg_regress tests (requires PostgreSQL running)
+installcheck:
+	@echo "Running pg_regress tests (PostgreSQL must be running with PGDATABASE=contrib_regression)..."
+	@cd test/regress && make installcheck
+
+# Alias for installcheck
+check: installcheck
 
 # Build Docker image
 docker-build:
@@ -52,6 +60,8 @@ help:
 	@echo "  test          - Run all tests (unit + E2E)"
 	@echo "  test-unit     - Run pgrx unit tests only"
 	@echo "  test-e2e      - Run E2E tests only (Docker)"
+	@echo "  installcheck  - Run pg_regress tests (requires PostgreSQL running)"
+	@echo "  check         - Alias for installcheck"
 	@echo "  docker-build  - Build Docker image"
 	@echo "  docker-push   - Build and push to ACR"
 	@echo "  run           - Start local pgrx dev server"
