@@ -3,7 +3,7 @@
 **Status**: Implementation in progress  
 **Authors**: pg_durable Team  
 **Created**: 2025-12-25  
-**Last Updated**: 2026-03-10
+**Last Updated**: 2026-03-11
 
 ---
 
@@ -102,7 +102,10 @@ The security guarantee is: **only superusers can install the extension**, theref
 | **T5**: Denial of Service | **MEDIUM** | Not implemented | Rate limiting; deferred |
 | **T6**: Worker Code Vulnerability | **MEDIUM** | Mitigated by design | Relies on code review |
 | **T0**: SECURITY DEFINER Misuse | **MEDIUM** | Documentation-only | Expected PG behavior |
+| **T12**: SQL Injection in Internal SPI Queries | **CRITICAL** | **Implemented** | `df.status()` and `df.result()` now use parameterized SPI queries (`Spi::get_one_with_args`) |
 | **T7**: Extension Trustworthiness | **LOW** | Accepted | Standard PG trust model |
+| **T13**: `search_path` Manipulation in PL/pgSQL Helpers | **LOW** | Implemented | Helper function definitions set `search_path = pg_catalog, df, pg_temp` |
+| **T14**: Extension Object Pre-creation | **LOW** | Accepted | Requires operator error; superuser-only install |
 | **T1–T3**: Privilege Escalation | **CRITICAL** | Implemented | Per-user sqlx connections |
 
 ---
@@ -296,6 +299,83 @@ See [spec-ssrf-protection.md](spec-ssrf-protection.md) for the full specificatio
 - Secrets should be resolved only inside the worker execution path and substituted into SQL/HTTP requests at execution time
 
 **Residual Risk**: Medium (by design secrets are high-impact); mitigated by least-privilege, auditing, and never exposing plaintext to users.
+
+---
+
+#### T12: SQL Injection in Internal SPI Queries
+
+**Severity**: CRITICAL  |  **Status**: Implemented
+
+**Threat**: Two extension functions (`df.status()` and `df.result()`) previously interpolated user-supplied `instance_id` directly into SQL without escaping single quotes. That allowed SQL injection to bypass RLS and read other users' instance data.
+
+```sql
+-- Attack: bypass RLS to read any user's instance status
+SELECT df.status('x'' OR 1=1--');
+
+-- Attack: read results from other users' workflows
+SELECT df.result('x'' UNION SELECT secret FROM admin_table--');
+```
+
+**Current mitigation** (`src/dsl.rs`):
+```rust
+// df.status() — parameterized SPI query
+let status: Option<String> = Spi::get_one_with_args(
+    "SELECT status FROM df.instances WHERE id = $1",
+    &[instance_id.into_datum()],
+)
+.expect("SPI query failed");
+
+// df.result() — parameterized SPI query
+let result: Option<String> = Spi::get_one_with_args(
+    "SELECT result::text FROM df.nodes\n     WHERE id = (SELECT root_node FROM df.instances WHERE id = $1)\n       AND status = 'completed'",
+    &[instance_id.into_datum()],
+)
+.expect("SPI query failed");
+```
+
+**Fix implemented**: Replaced string interpolation with parameterized SPI in `df.status()` and `df.result()` using `Spi::get_one_with_args()`. This removes quote-escaping as a correctness requirement for these call sites. Other internal SPI queries should also prefer parameterization wherever supported; manual escaping is fallback-only for cases where parameters are not available.
+
+**Note on variable substitution**: The `substitute_all_with_options()` function in `src/types.rs` inserts user variables (`{name}`) as-is into SQL without quoting. This is **by design** — variables are intended to be SQL fragments (e.g., table names, expressions). Users choose what to put in their own variables, and the SQL executes with their own privileges on a per-user connection. This is analogous to `psql` variable substitution (`:name`). Result substitution (`$name`) does properly quote string values.
+
+**Residual Risk**: Low. Remaining hardening is to continue migrating any remaining string-formatted SPI lookups to parameterized calls where possible.
+
+See this section and Appendix A checklist for ongoing SPI query hardening work.
+
+---
+
+#### T13: `search_path` Manipulation in PL/pgSQL Helper Functions
+
+**Severity**: LOW  |  **Status**: Implemented
+
+**Threat**: The extension's PL/pgSQL helper functions (`df.if_then_op()`, `df.if_else_op()`, `df.ensure_durofut()`) and SQL wrapper functions (`df.as_op()`, `df.loop_prefix_op()`) do not set a fixed `search_path`. If an attacker can place a malicious function in a schema that appears earlier in `search_path`, they could shadow a built-in or extension function.
+
+**Mitigations (implemented)**:
+- All function calls within the helpers are already schema-qualified: `df.ensure_durofut()`, `df.sql()`, `df.if()`, `df.loop()`, `df.as()`
+- Built-in functions used (`jsonb_build_object`) are in `pg_catalog`, which is always implicitly first in `search_path`
+- The functions are created in the `df` schema (owned by superuser)
+- The extension requires superuser to install
+- Helper definitions in both fresh install SQL and upgrade SQL include `SET search_path = pg_catalog, df, pg_temp`
+
+**Fix implemented**: Added `SET search_path = pg_catalog, df, pg_temp` to the helper function definitions (`df.if_then_op()`, `df.if_else_op()`, `df.ensure_durofut()`, `df.as_op()`, `df.loop_prefix_op()`) in both install and upgrade paths.
+
+**Residual Risk**: Low — current references are schema-qualified and helper search path is pinned as defense-in-depth.
+
+---
+
+#### T14: Extension Object Pre-creation Attack
+
+**Severity**: LOW  |  **Status**: Accepted risk
+
+**Threat**: The extension uses `CREATE TABLE IF NOT EXISTS` and `CREATE OR REPLACE FUNCTION` patterns. An attacker could pre-create objects with the same names to retain ownership or inject malicious implementations.
+
+**Why this is low risk**:
+- All DDL runs inside `extension_sql!()` blocks during `CREATE EXTENSION`, which requires superuser
+- The `df` schema is created by pgrx during extension installation — it doesn't exist beforehand
+- The `duroxide` schema is created by `sql/duroxide_install.sql` with `SET LOCAL search_path TO duroxide`
+- An attacker would need `CREATE TABLE` privilege in a schema controlled by the extension before the extension is installed — this requires the superuser to have manually created the schema and granted access (operator error)
+- The `CREATE OR REPLACE FUNCTION` for PL/pgSQL helpers is a standard pgrx convention; the `#[pg_extern]` macro also generates `CREATE OR REPLACE`
+
+**Residual Risk**: Low — requires operator error (manually creating `df` schema and granting usage before installing the extension).
 
 ---
 
@@ -1793,6 +1873,9 @@ These tests validate behavior when `execute_sql` fails due to expected errors an
 - [ ] Error messages don't leak other users' data
 - [ ] Logging includes effective user for audit trail
 - [ ] `SET df.in_workflow = 'true'` is set on user connections to prevent variable mutation during execution (future: could also guard against recursive `df.start()`)
+- [ ] All SPI queries that accept user-supplied parameters prefer parameterized APIs (`Spi::get_one_with_args()` / `Spi::run_with_args()`). Use manual `.replace('\'', "''")` escaping only as fallback where parameters cannot be used. Cross-check: `df.status()`, `df.result()`, `df.cancel()`, `df.signal()`, monitoring functions
+- [ ] PL/pgSQL and SQL helper functions include `SET search_path = pg_catalog, df, pg_temp`
+- [ ] All function/table references in dynamic SQL are schema-qualified (`df.instances`, not `instances`)
 
 ---
 

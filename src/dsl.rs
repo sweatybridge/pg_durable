@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use cron::Schedule as CronSchedule;
+use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use std::str::FromStr;
 
@@ -114,22 +115,14 @@ pub fn setvar(name: &str, value: &str) -> String {
         pgrx::error!("df.setvar() cannot be called inside a workflow - set variables before starting the workflow");
     }
 
-    let escaped_name = name.replace('\'', "''");
-    let escaped_value = value.replace('\'', "''");
     let sql = if owner_scoped_vars_enabled() {
-        format!(
-            "INSERT INTO df.vars (name, value) VALUES ('{}', '{}')
-             ON CONFLICT (owner, name) DO UPDATE SET value = EXCLUDED.value",
-            escaped_name, escaped_value
-        )
+        "INSERT INTO df.vars (name, value) VALUES ($1, $2)
+         ON CONFLICT (owner, name) DO UPDATE SET value = EXCLUDED.value"
     } else {
-        format!(
-            "INSERT INTO df.vars (name, value) VALUES ('{}', '{}')
-             ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value",
-            escaped_name, escaped_value
-        )
+        "INSERT INTO df.vars (name, value) VALUES ($1, $2)
+         ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value"
     };
-    if let Err(e) = Spi::run(&sql) {
+    if let Err(e) = Spi::run_with_args(sql, &[name.into(), value.into()]) {
         pgrx::error!("Failed to set variable: {:?}", e);
     }
     "OK".to_string()
@@ -139,16 +132,14 @@ pub fn setvar(name: &str, value: &str) -> String {
 /// Returns the variable owned by the current user.
 #[pg_extern(schema = "df")]
 pub fn getvar(name: &str) -> Option<String> {
-    let escaped_name = name.replace('\'', "''");
     let sql = if owner_scoped_vars_enabled() {
-        format!(
-            "SELECT value FROM df.vars WHERE name = '{}' AND owner = current_user::regrole",
-            escaped_name
-        )
+        "SELECT value FROM df.vars WHERE name = $1 AND owner = current_user::regrole"
     } else {
-        format!("SELECT value FROM df.vars WHERE name = '{}'", escaped_name)
+        "SELECT value FROM df.vars WHERE name = $1"
     };
-    Spi::get_one::<String>(&sql).ok().flatten()
+    Spi::get_one_with_args::<String>(sql, &[name.into()])
+        .ok()
+        .flatten()
 }
 
 /// Removes a workflow variable.
@@ -160,16 +151,12 @@ pub fn unsetvar(name: &str) -> String {
         pgrx::error!("df.unsetvar() cannot be called inside a workflow - manage variables before starting the workflow");
     }
 
-    let escaped_name = name.replace('\'', "''");
     let sql = if owner_scoped_vars_enabled() {
-        format!(
-            "DELETE FROM df.vars WHERE name = '{}' AND owner = current_user::regrole",
-            escaped_name
-        )
+        "DELETE FROM df.vars WHERE name = $1 AND owner = current_user::regrole"
     } else {
-        format!("DELETE FROM df.vars WHERE name = '{}'", escaped_name)
+        "DELETE FROM df.vars WHERE name = $1"
     };
-    if let Err(e) = Spi::run(&sql) {
+    if let Err(e) = Spi::run_with_args(sql, &[name.into()]) {
         pgrx::error!("Failed to unset variable: {:?}", e);
     }
     "OK".to_string()
@@ -547,10 +534,10 @@ pub fn signal(instance_id: &str, signal_name: &str, signal_data: default!(&str, 
 
     // Ownership check: SPI goes through RLS, so this returns false for
     // non-owned instances (the row is invisible to the calling user).
-    let exists: bool = Spi::get_one(&format!(
-        "SELECT EXISTS(SELECT 1 FROM df.instances WHERE id = '{}')",
-        instance_id.replace('\'', "''")
-    ))
+    let exists: bool = Spi::get_one_with_args(
+        "SELECT EXISTS(SELECT 1 FROM df.instances WHERE id = $1)",
+        &[instance_id.into()],
+    )
     .ok()
     .flatten()
     .unwrap_or(false);
@@ -591,10 +578,10 @@ pub fn start(
 
     // Validate that the target database exists (if specified)
     if let Some(db) = database {
-        let exists: bool = match Spi::get_one(&format!(
-            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = '{}')",
-            db.replace('\'', "''")
-        )) {
+        let exists: bool = match Spi::get_one_with_args(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
+            &[db.into()],
+        ) {
             Ok(Some(v)) => v,
             Ok(None) => false,
             Err(e) => pgrx::error!("failed to check database existence: {}", e),
@@ -608,19 +595,12 @@ pub fn start(
     let session_user_oid = unsafe { pgrx::pg_sys::GetSessionUserId() };
     let outer_user_oid = unsafe { pgrx::pg_sys::GetOuterUserId() };
 
-    let label_sql = label
-        .map(|l| format!("'{}'", l.replace('\'', "''")))
-        .unwrap_or_else(|| "NULL".to_string());
-
-    let outer_oid_u32: u32 = outer_user_oid.into();
-    let session_oid_u32: u32 = session_user_oid.into();
-
     // Insert all nodes from the nested graph into df.nodes, returning root node ID
     fn insert_nodes(
         node: &Durofut,
         instance_id: &str,
-        outer_user_oid: u32,
-        session_user_oid: u32,
+        outer_user_oid: pgrx::pg_sys::Oid,
+        session_user_oid: pgrx::pg_sys::Oid,
         database: Option<&str>,
     ) -> String {
         let node_id = short_id();
@@ -636,7 +616,7 @@ pub fn start(
             .map(|n| insert_nodes(n, instance_id, outer_user_oid, session_user_oid, database));
 
         // Process config JSON to recursively insert embedded nodes and get their IDs
-        let query_escaped = match node.transform_config_children(|child| {
+        let query_val: Option<String> = match node.transform_config_children(|child| {
             Ok(insert_nodes(
                 child,
                 instance_id,
@@ -645,50 +625,49 @@ pub fn start(
                 database,
             ))
         }) {
-            Ok(Some(updated_query)) => {
-                format!("'{}'", updated_query.replace('\'', "''"))
-            }
-            Ok(None) => "NULL".to_string(),
+            Ok(updated_query) => updated_query,
             Err(e) => pgrx::error!("Invalid config in {} node: {}", node.node_type, e),
         };
 
-        let result_name_escaped = node
-            .result_name
-            .as_ref()
-            .map(|n| format!("'{}'", n.replace('\'', "''")))
-            .unwrap_or_else(|| "NULL".to_string());
+        // Build parameterized args for the INSERT
+        let query_arg: DatumWithOid = match &query_val {
+            Some(q) => q.as_str().into(),
+            None => DatumWithOid::null::<String>(),
+        };
+        let result_name_arg: DatumWithOid = match &node.result_name {
+            Some(n) => n.as_str().into(),
+            None => DatumWithOid::null::<String>(),
+        };
+        let left_node_arg: DatumWithOid = match &left_id {
+            Some(id) => id.as_str().into(),
+            None => DatumWithOid::null::<String>(),
+        };
+        let right_node_arg: DatumWithOid = match &right_id {
+            Some(id) => id.as_str().into(),
+            None => DatumWithOid::null::<String>(),
+        };
+        let database_arg: DatumWithOid = match database {
+            Some(db) => db.into(),
+            None => DatumWithOid::null::<String>(),
+        };
 
-        let left_node_escaped = left_id
-            .as_ref()
-            .map(|id| format!("'{id}'"))
-            .unwrap_or_else(|| "NULL".to_string());
-
-        let right_node_escaped = right_id
-            .as_ref()
-            .map(|id| format!("'{id}'"))
-            .unwrap_or_else(|| "NULL".to_string());
-
-        let database_escaped = database
-            .map(|db| format!("'{}'", db.replace('\'', "''")))
-            .unwrap_or_else(|| "NULL".to_string());
-
-        // Insert this node with the generated ID
-        let insert_sql = format!(
+        // Insert this node with parameterized query
+        if let Err(e) = Spi::run_with_args(
             "INSERT INTO df.nodes (id, instance_id, node_type, query, result_name, left_node, right_node, submitted_by, login_role, database)
-             VALUES ('{}', '{}', '{}', {}, {}, {}, {}, {}::oid::regrole, {}::oid::regrole, {})",
-            node_id,
-            instance_id,
-            node.node_type.replace('\'', "''"),
-            query_escaped,
-            result_name_escaped,
-            left_node_escaped,
-            right_node_escaped,
-            outer_user_oid,
-            session_user_oid,
-            database_escaped
-        );
-
-        if let Err(e) = Spi::run(&insert_sql) {
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::oid::regrole, $9::oid::regrole, $10)",
+            &[
+                node_id.as_str().into(),
+                instance_id.into(),
+                node.node_type.as_str().into(),
+                query_arg,
+                result_name_arg,
+                left_node_arg,
+                right_node_arg,
+                outer_user_oid.into(),
+                session_user_oid.into(),
+                database_arg,
+            ],
+        ) {
             pgrx::error!("Failed to insert node {}: {:?}", node_id, e);
         }
 
@@ -699,27 +678,33 @@ pub fn start(
     let root_node_id = insert_nodes(
         &durofut,
         &instance_id,
-        outer_oid_u32,
-        session_oid_u32,
+        outer_user_oid,
+        session_user_oid,
         database,
     );
 
-    let database_sql = database
-        .map(|db| format!("'{}'", db.replace('\'', "''")))
-        .unwrap_or_else(|| "NULL".to_string());
+    // Build parameterized args for the instance INSERT
+    let label_arg: DatumWithOid = match label {
+        Some(l) => l.into(),
+        None => DatumWithOid::null::<String>(),
+    };
+    let database_arg: DatumWithOid = match database {
+        Some(db) => db.into(),
+        None => DatumWithOid::null::<String>(),
+    };
 
     // Create instance record with root node ID
-    let create_instance_sql = format!(
-        "INSERT INTO df.instances (id, label, root_node, status, submitted_by, login_role, database) VALUES ('{}', {}, '{}', 'pending', {}::oid::regrole, {}::oid::regrole, {})",
-        instance_id,
-        label_sql,
-        root_node_id,
-        outer_oid_u32,
-        session_oid_u32,
-        database_sql
-    );
-
-    if let Err(e) = Spi::run(&create_instance_sql) {
+    if let Err(e) = Spi::run_with_args(
+        "INSERT INTO df.instances (id, label, root_node, status, submitted_by, login_role, database) VALUES ($1, $2, $3, 'pending', $4::oid::regrole, $5::oid::regrole, $6)",
+        &[
+            instance_id.as_str().into(),
+            label_arg,
+            root_node_id.as_str().into(),
+            outer_user_oid.into(),
+            session_user_oid.into(),
+            database_arg,
+        ],
+    ) {
         pgrx::error!("Failed to create instance: {:?}", e);
     }
 
@@ -775,10 +760,10 @@ pub fn cancel(instance_id: &str, reason: default!(&str, "'Cancelled by user'")) 
 
     // Ownership check: SPI goes through RLS, so this returns false for
     // non-owned instances (the row is invisible to the calling user).
-    let exists: bool = Spi::get_one(&format!(
-        "SELECT EXISTS(SELECT 1 FROM df.instances WHERE id = '{}')",
-        instance_id.replace('\'', "''")
-    ))
+    let exists: bool = Spi::get_one_with_args(
+        "SELECT EXISTS(SELECT 1 FROM df.instances WHERE id = $1)",
+        &[instance_id.into()],
+    )
     .ok()
     .flatten()
     .unwrap_or(false);
@@ -792,10 +777,10 @@ pub fn cancel(instance_id: &str, reason: default!(&str, "'Cancelled by user'")) 
 
     // Update the instance status to 'cancelled' via SPI.
     // User has column-level UPDATE on (status, updated_at) with RLS restricting to own rows.
-    Spi::run(&format!(
-        "UPDATE df.instances SET status = 'cancelled', updated_at = now() WHERE id = '{}'",
-        instance_id.replace('\'', "''")
-    ))
+    Spi::run_with_args(
+        "UPDATE df.instances SET status = 'cancelled', updated_at = now() WHERE id = $1",
+        &[instance_id.into()],
+    )
     .unwrap_or_else(|e| warning!("Failed to update instance status: {e}"));
 
     format!("Instance {instance_id} cancelled: {reason}")
@@ -804,8 +789,12 @@ pub fn cancel(instance_id: &str, reason: default!(&str, "'Cancelled by user'")) 
 /// Gets the status of a durable function instance.
 #[pg_extern(schema = "df")]
 pub fn status(instance_id: &str) -> Option<String> {
-    let sql = format!("SELECT status FROM df.instances WHERE id = '{instance_id}'");
-    Spi::get_one::<String>(&sql).ok().flatten()
+    Spi::get_one_with_args::<String>(
+        "SELECT status FROM df.instances WHERE id = $1",
+        &[instance_id.into()],
+    )
+    .ok()
+    .flatten()
 }
 
 /// Manually runs pending durable functions.
@@ -821,12 +810,14 @@ pub fn run(instance_id: default!(Option<&str>, "NULL")) -> String {
 /// Gets the result of a completed durable function.
 #[pg_extern(schema = "df")]
 pub fn result(instance_id: &str) -> Option<String> {
-    let sql = format!(
-        r#"SELECT result::text FROM df.nodes 
-           WHERE id = (SELECT root_node FROM df.instances WHERE id = '{instance_id}')
-           AND status = 'completed'"#
-    );
-    Spi::get_one::<String>(&sql).ok().flatten()
+    Spi::get_one_with_args::<String>(
+        r#"SELECT result::text FROM df.nodes
+           WHERE id = (SELECT root_node FROM df.instances WHERE id = $1)
+           AND status = 'completed'"#,
+        &[instance_id.into()],
+    )
+    .ok()
+    .flatten()
 }
 
 /// Waits for a durable function to complete, returning its final status.
@@ -859,13 +850,11 @@ pub fn wait_for_completion(
 
     loop {
         // Query instance status
-        let sql = format!(
-            "SELECT status FROM df.instances WHERE id = '{}'",
-            instance_id.replace('\'', "''")
-        );
-
-        let status: Option<String> =
-            Spi::get_one(&sql).map_err(|e| format!("Failed to query status: {:?}", e))?;
+        let status: Option<String> = Spi::get_one_with_args(
+            "SELECT status FROM df.instances WHERE id = $1",
+            &[instance_id.into()],
+        )
+        .map_err(|e| format!("Failed to query status: {:?}", e))?;
 
         if let Some(ref s) = status {
             let s_lower = s.to_lowercase();
