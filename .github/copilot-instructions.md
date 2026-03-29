@@ -28,6 +28,12 @@ pg_durable is a **PostgreSQL extension** (pgrx/Rust) providing durable SQL funct
 # Build extension
 cargo build                    # or: make build
 
+# Check formatting (run after every code change)
+cargo fmt -p pg_durable -- --check
+
+# Fix formatting
+cargo fmt -p pg_durable
+
 # Run unit tests (pgrx)
 ./scripts/test-unit.sh         # uses: cargo pgrx test pg17
 
@@ -107,7 +113,7 @@ For Scenario A, treat the upgrade path as the contract for already-shipped versi
 ### Before Committing
 
 1. **Clean warnings**: Run `cargo build --features pg17` and `cargo clippy --features pg17` — fix all warnings
-2. **Format code**: Run `cargo fmt`
+2. **Format code**: Run `cargo fmt -p pg_durable` (use `cargo fmt -p pg_durable -- --check` to verify without modifying)
 3. **Run tests**: `./scripts/test-unit.sh` then `./scripts/test-e2e-local.sh`
 
 ### Handling Unused Code Warnings
@@ -179,7 +185,7 @@ SELECT 'TEST PASSED' AS result;
 
 Pull requests automatically run the CI workflow (`.github/workflows/ci.yml`):
 
-1. **Format Check**: `cargo fmt --check`
+1. **Format Check**: `cargo fmt -p pg_durable -- --check`
 2. **Clippy & Tests**: `cargo clippy`, `cargo pgrx test pg17`, and `./scripts/test-e2e-local.sh`
 3. **Upgrade Tests**: `./scripts/test-upgrade.sh` (schema comparison + backward compat)
 
