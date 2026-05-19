@@ -418,6 +418,12 @@ async fn execute_wait_schedule_node(
 /// Sentinel key used to signal a break from within a loop
 const BREAK_SENTINEL: &str = "__break__";
 
+/// Minimum wall-clock duration that every loop iteration must take before
+/// `continue_as_new` is called.  If the body (plus any while-condition
+/// evaluation) completes faster than this, a compensating timer makes up the
+/// deficit so an empty-bodied loop can't busy-spin via continue_as_new.
+const LOOP_MIN_ITER_DURATION: Duration = Duration::from_secs(1);
+
 /// Check if a result contains a break signal
 fn is_break_signal(result: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(result)
@@ -450,6 +456,11 @@ async fn execute_loop_node(
         .left_node
         .as_ref()
         .ok_or_else(|| format!("LOOP node {node_id} has no body"))?;
+
+    // Capture the iteration start time so we can rate-limit `continue_as_new`
+    // below.  `utc_now()` is duroxide's deterministic clock (recorded in
+    // history and replayed verbatim), so this remains replay-safe.
+    let iter_started = ctx.utc_now().await.ok();
 
     ctx.trace_info("Executing loop iteration");
     let body_result = Box::pin(execute_function_node_with_vars(
@@ -495,6 +506,26 @@ async fn execute_loop_node(
     }
 
     ctx.trace_info("Continuing as new for next loop iteration");
+
+    // Enforce a minimum per-iteration wall-clock duration to prevent
+    // busy-looping (e.g. `df.loop(df.sleep(0))`).  Compute the elapsed time
+    // from the deterministic clock; if the iteration finished faster than
+    // LOOP_MIN_ITER_DURATION, schedule a timer for the deficit so the next
+    // continue_as_new is gated by at least that much real-clock time.
+    if let Some(started) = iter_started {
+        if let Ok(now) = ctx.utc_now().await {
+            let elapsed = now.duration_since(started).unwrap_or(Duration::ZERO);
+            if elapsed < LOOP_MIN_ITER_DURATION {
+                let deficit = LOOP_MIN_ITER_DURATION - elapsed;
+                ctx.trace_info(format!(
+                    "Loop iteration took {elapsed:?} (< {LOOP_MIN_ITER_DURATION:?}); \
+                     adding {deficit:?} rate-limit delay"
+                ));
+                ctx.schedule_timer(deficit).await;
+            }
+        }
+    }
+
     // Preserve vars in continue_as_new input
     let new_input = FunctionInput {
         instance_id: graph.instance_id.clone(),
