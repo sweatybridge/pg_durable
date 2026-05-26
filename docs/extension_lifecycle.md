@@ -2,9 +2,9 @@
 
 **Status:** Implemented  
 **Last Updated:** 2026-03-01  
-**Dependencies:** duroxide-pg-opt (git submodule)
+**Dependencies:** duroxide-pg (crates.io)
 
-> **Note:** This document describes the extension lifecycle management, background worker behavior, and duroxide-pg-opt schema integration in pg_durable.
+> **Note:** This document describes the extension lifecycle management, background worker behavior, and duroxide-pg schema integration in pg_durable.
 
 ## Problem Statement
 
@@ -99,7 +99,7 @@ fn get_duroxide_client() -> Result<&'static Client, String> {
 
 The duroxide provider tables, functions, indexes, and triggers are **not** created by extension SQL. Instead, the background worker (BGW) populates the `duroxide` schema at startup via `MigrationPolicy::ApplyAll` (see section 2). This decouples the duroxide engine schema from the extension lifecycle:
 
-- Duroxide-pg-opt upgrades require no changes to extension SQL or upgrade scripts — the BGW applies new migrations automatically.
+- duroxide-pg dependency upgrades require no changes to extension SQL or upgrade scripts — the BGW applies new migrations automatically.
 - The duroxide schema can evolve independently of pg_durable releases.
 - Swapping the duroxide provider only requires changes to BGW initialization code, not extension DDL.
 
@@ -109,7 +109,7 @@ See [bgw-applies-migrations.md](bgw-applies-migrations.md) for the full design.
 
 ### 2. Background Worker: `MigrationPolicy::ApplyAll`
 
-duroxide-pg-opt provides `MigrationPolicy::ApplyAll` which:
+duroxide-pg provides `MigrationPolicy::ApplyAll` which:
 - Applies pending migrations from the embedded migration files
 - Creates the schema tables if they don't yet exist
 - Records applied migrations in `_duroxide_migrations`
@@ -187,7 +187,7 @@ All backend sessions (`df.*` functions) continue to use `MigrationPolicy::Verify
 See `src/worker.rs` for the full implementation. The main loop in `run_duroxide_runtime()` drives the state machine:
 
 1. `wait_for_extension_creation()` polls `pg_extension` via a reusable `sqlx::PgPool` (max 1 connection) every 5 seconds.
-2. `initialize_duroxide_runtime()` first checks that the `duroxide` schema is owned by the `pg_durable` extension (via `pg_depend`). If not, it logs a warning and retries after the poll interval. It then releases extension ownership of any duroxide objects (no-op on fresh installs; needed for upgrades from ≤0.1.1). Then it creates a `PostgresProvider` using `worker_provider_config()` (from `src/types.rs`) which sets `ApplyAll`, with long-polling intentionally left enabled for work dispatch. Unknown-migration rejection is always enforced unconditionally by the provider.
+2. `initialize_duroxide_runtime()` first checks that the `duroxide` schema is owned by the `pg_durable` extension (via `pg_depend`). If not, it logs a warning and retries after the poll interval. It then releases extension ownership of any duroxide objects (no-op on fresh installs; needed for upgrades from ≤0.1.1). Then it creates a `PostgresProvider` using `worker_provider_config()` (from `src/types.rs`) which sets `ApplyAll`. Unknown-migration rejection is always enforced unconditionally by the provider.
 3. After the runtime starts, the BGW writes a **readiness record** (`duroxide._worker_ready`) with the current `WORKER_SCHEMA_VERSION`, then writes an **epoch sentinel** (`df._worker_epoch`) with a fresh UUID. The readiness record signals backend sessions that the duroxide schema is fully initialized; the epoch sentinel detects drop+recreate scenarios (see below).
 4. `run_until_extension_dropped_or_shutdown()` uses `tokio::select!` to interleave shutdown checks (every 1 second, via direct volatile read) with epoch-sentinel checks (every 5 seconds via the shared polling pool).
 
@@ -211,7 +211,7 @@ Key design choices vs. the original sketch:
 - **Epoch sentinel**: Eliminates the drop+recreate blind spot; no need for explicit sleeps in tests between DROP and CREATE EXTENSION.
 - **Reusable polling pool**: A single `PgPool(max_connections=1)` is created once and shared across all polling calls, avoiding the overhead of opening/closing a TCP connection on every poll.
 - **Direct shutdown check**: `is_shutdown_requested()` reads a volatile atomic and does not need `spawn_blocking`; the check runs every 1 second rather than every 100ms.
-- **Config helpers**: `worker_provider_config()` and `backend_provider_config()` in `src/types.rs` centralize `ProviderConfig` construction, eliminating duplication across ~10 call sites.
+- **Config helpers**: `worker_provider_config()`, `backend_provider_config()`, and `new_backend_provider()` in `src/types.rs` centralize provider construction and lifecycle policy choices.
 
 ### 4. Prevent df Functions from Triggering Schema Creation
 
@@ -219,13 +219,10 @@ Key design choices vs. the original sketch:
 
 **Implemented:** all call sites use `MigrationPolicy::VerifyOnly`, so they will not execute DDL.
 
-**Implemented:** request/response-style backend calls disable Duroxide long-polling to avoid a dedicated listener connection per backend.
-
 #### Client Functions (src/client.rs)
 
-All backend call sites (client, monitoring, explain) use `backend_provider_config()` from `src/types.rs`, which sets:
+All backend call sites (client, monitoring, explain) use `new_backend_provider()` from `src/types.rs`, which applies `backend_provider_config()` settings:
 - `VerifyOnly`: never create schema/tables
-- `long_poll.enabled = false`: avoid dedicated listener connection per backend session
 
 Unknown-migration rejection is enforced unconditionally by the provider (not a config flag).
 
@@ -236,13 +233,12 @@ See `src/client.rs::get_duroxide_client()` for the cached-client implementation.
 **Rationale:**
 - (Future) Check extension existence before attempting duroxide connection
 - Use `VerifyOnly` policy to ensure no schema creation from client code
-- Disable long-polling for backend request/response operations to save a dedicated listener connection per backend
 - Fail with clear, actionable error messages for different failure scenarios
 - Note on caching: after `DROP EXTENSION`, the `df.*` entrypoints disappear, so cached clients are not reachable through SQL. However, if the extension is later re-created while a backend session remains alive, a previously cached client may be stale; this can be handled later by recreating the client on specific errors.
 
 #### Monitoring Functions (src/monitoring.rs, src/explain.rs)
 
-Apply the same pattern: use `backend_provider_config()` from `src/types.rs`. See `src/monitoring.rs` and `src/explain.rs` for the full implementations.
+Apply the same pattern: use `new_backend_provider()` from `src/types.rs`. See `src/monitoring.rs` and `src/explain.rs` for the full implementations.
 
 **Rationale:**
 - Same benefits as client functions: no schema creation
@@ -345,7 +341,6 @@ Because the Duroxide schema DDL runs inside `CREATE EXTENSION` as extension SQL,
 1. **ProviderConfig integration**
    - Test that `MigrationPolicy::VerifyOnly` correctly errors when schema missing
    - Test that `MigrationPolicy::VerifyOnly` succeeds when schema exists and is current
-    - Test that disabling long-polling in backend sessions doesn't create PgListener connections
 
 ### E2E Tests
 
@@ -396,7 +391,7 @@ Because the Duroxide schema DDL runs inside `CREATE EXTENSION` as extension SQL,
 
 ### Where this is intentionally non-idiomatic (trade-off)
 
-- Duroxide provider DDL is applied by the BGW at startup (`ApplyAll`) rather than embedded in extension SQL. This decouples the duroxide schema lifecycle from `ALTER EXTENSION UPDATE`, allowing duroxide-pg-opt upgrades without extension upgrade scripts.
+- Duroxide provider DDL is applied by the BGW at startup (`ApplyAll`) rather than embedded in extension SQL. This decouples the duroxide schema lifecycle from `ALTER EXTENSION UPDATE`, allowing duroxide-pg upgrades without extension upgrade scripts.
 
 ### Rationale for Polling in MVP
 
@@ -406,13 +401,13 @@ While processUtility hooks are the "correct" PostgreSQL approach, polling is acc
 - Simpler implementation = faster time to value
 - Can be upgraded to hooks post-MVP without changing client-facing behavior
 
-### Trade-offs with duroxide-pg-opt
+### Trade-offs with duroxide-pg
 
 The duroxide schema is extension-owned but its contents are BGW-managed:
 
 - ✅ PostgreSQL-native lifecycle: install/upgrade/drop go through extension scripts (for `df.*` schema) and BGW-applied migrations (for `duroxide.*` schema).
 - ✅ Clear ownership: the `duroxide` schema is extension-owned; objects inside it are BGW-managed.
-- ✅ Decoupled: duroxide-pg-opt upgrades do not require changes to extension SQL or upgrade scripts.
+- ✅ Decoupled: duroxide-pg upgrades do not require changes to extension SQL or upgrade scripts.
 
 ### Known Limitations (future work)
 
@@ -448,18 +443,12 @@ The duroxide schema is extension-owned but its contents are BGW-managed:
 2. **Background worker wait behavior**
     - **New behavior:** BGW waits for extension existence, and also stays in "waiting" when migrations are missing/behind (VerifyOnly fails).
 
-3. **Backend sessions disable long-polling**
-    - **Default behavior (upstream):** `duroxide_pg_opt::PostgresProvider` can enable long-polling by default.
-    - **pg_durable behavior:** For backend request/response operations (start/cancel/signal, monitoring), we disable long-polling to avoid a dedicated listener connection and notifier task.
-    - **Impact:** Resource savings for installations with many backends.
-    - **Compatibility:** No user-visible changes expected.
-
 ## Open Questions
 
 ### Resolved
 
-1. **Should duroxide-pg-opt provide a "don't create schema" mode?**
-   - ✅ **RESOLVED:** duroxide-pg-opt 0.1.18 provides `MigrationPolicy::VerifyOnly` which never executes DDL
+1. **Should duroxide-pg provide a "don't create schema" mode?**
+   - ✅ **RESOLVED:** duroxide-pg 0.1.18 provides `MigrationPolicy::VerifyOnly` which never executes DDL
    - No need for upstream changes or manual schema checks
 
 2. **How should pg_durable avoid implicit schema creation?**
@@ -504,7 +493,7 @@ The duroxide schema is extension-owned but its contents are BGW-managed:
 
 - PostgreSQL Extension Documentation: https://www.postgresql.org/docs/current/extend-extensions.html
 - pgrx Background Worker Documentation: https://github.com/pgcentralfoundation/pgrx/blob/develop/pgrx-examples/bgworker/src/lib.rs
-- duroxide-pg-opt: https://github.com/microsoft/duroxide-pg-opt
+- duroxide-pg: https://github.com/microsoft/duroxide-pg
 - pg_durable current architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Timeline Estimate

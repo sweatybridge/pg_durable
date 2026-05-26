@@ -16,7 +16,7 @@ model:
   externalDependencies:
     - "PostgreSQL 17 (host database engine)"
     - "duroxide (durable execution runtime, embedded Rust crate)"
-    - "duroxide-pg-opt (PostgreSQL persistence provider for duroxide)"
+    - "duroxide-pg (PostgreSQL persistence provider for duroxide)"
     - "sqlx (async PostgreSQL driver for background worker connections)"
     - "reqwest (HTTP client for df.http() activity)"
     - "pgrx 0.16.1 (PostgreSQL extension framework)"
@@ -198,8 +198,8 @@ diagrams:
         to: "DS-DUROXIDE"
         description: >
           Background worker polls duroxide tables for pending orchestration
-          and activity work items. Uses long-polling with sqlx pool
-          (5 connections as worker role).
+          and activity work items using the worker sqlx pool (5 connections
+          as worker role).
         properties:
           Source Authenticated: "Yes"
           Provides Integrity: "Yes"
