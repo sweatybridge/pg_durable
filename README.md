@@ -4,8 +4,6 @@
 
 pg_durable brings durable execution to PostgreSQL. Define long-running, fault-tolerant functions entirely in SQL—no external orchestrators, no YAML, no separate deployment.
 
-> **Not to be confused with [duroxide-pg](https://github.com/microsoft/duroxide-pg).** duroxide-pg is the lower-level PostgreSQL provider for the [duroxide](https://github.com/microsoft/duroxide) Rust durable-execution runtime, aimed at developers writing workflows in Rust. pg_durable sits on top of both and exposes durable execution as a SQL-native PostgreSQL extension — reach for it when you want everything inside PG.
-
 ## Features
 
 - **Durable** — Function state persists to PostgreSQL. Survives crashes, restarts, and failovers.
@@ -29,6 +27,10 @@ SELECT df.start(
 2. **Start functions** with `df.start()` which returns an instance ID
 3. **Runtime executes durably** — each step is checkpointed, survives crashes via replay
 4. **Query progress** anytime from standard PostgreSQL tables
+
+## Relationship With duroxide-pg
+* Use pg_durable when you want pipelines or durable functions directly in SQL and PostgreSQL, no other moving parts needed.
+* Use [duroxide-pg](https://github.com/microsoft/duroxide-pg) when you prefer to define functions in Rust, Python, or Node, using PostgreSQL only as a persistent store.
 
 ## Prerequisites
 
