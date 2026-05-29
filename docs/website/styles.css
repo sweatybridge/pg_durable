@@ -563,6 +563,16 @@ main,
   gap: 1.5rem;
 }
 
+.comparison-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.comparison-without,
+.comparison-with {
+  flex: 1;
+}
+
 .comparison-col h3 {
   font-family: var(--font-display);
   font-size: 1.4rem;
@@ -697,6 +707,8 @@ main,
 }
 
 .comparison-with {
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border-accent);
   border-radius: var(--radius);
   overflow: hidden;
@@ -704,6 +716,7 @@ main,
 }
 
 .comparison-with pre {
+  flex: 1;
   border: none;
   border-radius: 0;
   background: var(--code-bg);
@@ -1161,7 +1174,7 @@ footer p {
   .comparison-grid {
     grid-template-columns: 1fr 1fr;
     gap: 1.5rem;
-    align-items: start;
+    align-items: stretch;
   }
 }
 
