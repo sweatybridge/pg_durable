@@ -598,6 +598,25 @@ SELECT job.id, v.ord, v.name, v.query, v.deps FROM job, (VALUES
       <section class="use-cases" id="use-cases">
         <div class="container">
           <h2>What you can build</h2>
+          <p class="section-lede">
+            From data pipelines to database maintenance to cloud-connected workflows —
+            here are the patterns pg_durable handles, each backed by a copy-paste-ready scenario.
+          </p>
+
+          <a class="scenarios-banner" href="https://github.com/microsoft/pg_durable/blob/main/docs/SCENARIOS.md">
+            <div class="scenarios-banner-text">
+              <span class="scenarios-banner-eyebrow">📚 Full Scenarios &amp; Use Cases Guide</span>
+              <h3>Every pattern below, written out end to end</h3>
+              <p>
+                One consolidated guide: <strong>core orchestration patterns</strong> (ETL, parallel
+                aggregation, scheduling, branching), <strong>standard operational scenarios</strong>
+                (vacuum, bloat &amp; wraparound remediation), and <strong>Azure integration examples</strong>
+                (Functions, HTTP, human approval) — all with runnable SQL.
+              </p>
+            </div>
+            <span class="arrow">→</span>
+          </a>
+
           <div class="use-case-grid">
             <article class="use-case-card">
               <h3>🔗 ETL Pipelines</h3>
@@ -665,6 +684,41 @@ SELECT job.id, v.ord, v.name, v.query, v.deps FROM job, (VALUES
                 <span>~> sequence</span>
                 <span>df.if()</span>
                 <span>|=> variables</span>
+              </div>
+            </article>
+            <article class="use-case-card">
+              <h3>🧹 Database Maintenance</h3>
+              <p class="use-case-desc">
+                Detect autovacuum blockers, table bloat, or wraparound risk, surface findings for
+                review, wait for approval, then remediate — durably, even across restarts.
+              </p>
+              <div class="use-case-operators">
+                <span>?> conditional</span>
+                <span>df.wait_for_signal()</span>
+                <span>@> loop</span>
+              </div>
+            </article>
+            <article class="use-case-card">
+              <h3>☁️ Azure Functions &amp; HTTP</h3>
+              <p class="use-case-desc">
+                Call Azure Functions or any allowlisted HTTPS endpoint straight from SQL with
+                <code>df.http()</code> — chunk documents, enrich rows, or classify records inline.
+              </p>
+              <div class="use-case-operators">
+                <span>df.http()</span>
+                <span>~> sequence</span>
+              </div>
+            </article>
+            <article class="use-case-card">
+              <h3>🙋 Human-in-the-Loop Approval</h3>
+              <p class="use-case-desc">
+                Auto-approve routine work and pause high-stakes actions (large invoices, destructive
+                ops) until a human signals approval — like the invoice-approval example.
+              </p>
+              <div class="use-case-operators">
+                <span>df.wait_for_signal()</span>
+                <span>df.if()</span>
+                <span>@> loop</span>
               </div>
             </article>
           </div>
@@ -785,7 +839,7 @@ SELECT job.id, v.ord, v.name, v.query, v.deps FROM job, (VALUES
           <a class="cta-card" href="https://github.com/microsoft/pg_durable/blob/main/docs/SCENARIOS.md">
             <div>
               <h3>🚀 Explore the Scenarios Guide</h3>
-              <p>Copy-paste examples for ETL, scheduling, parallel aggregation, and more.</p>
+              <p>Copy-paste examples for ETL, scheduling, parallel aggregation, database maintenance, Azure integration, and more.</p>
             </div>
             <span class="arrow">→</span>
           </a>

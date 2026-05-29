@@ -969,6 +969,82 @@ h2 {
   padding: 3.5rem 0;
 }
 
+.section-lede {
+  max-width: 60ch;
+  margin: 0.4rem 0 1.6rem;
+  color: var(--text-secondary);
+  font-size: 1.02rem;
+  line-height: 1.65;
+}
+
+.scenarios-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1.8rem;
+  padding: 1.5rem 1.8rem;
+  border: 1px solid var(--border-accent);
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(227, 164, 92, 0.14), transparent 60%),
+    linear-gradient(180deg, rgba(27, 35, 54, 0.7), rgba(14, 19, 32, 0.7));
+  box-shadow: var(--shadow-card);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.scenarios-banner:hover {
+  transform: translateY(-3px);
+  border-color: var(--copper);
+  box-shadow: 0 24px 50px -28px var(--copper-glow);
+}
+
+.scenarios-banner-eyebrow {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--copper-light);
+  margin-bottom: 0.4rem;
+}
+
+.scenarios-banner h3 {
+  margin: 0 0 0.5rem;
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.scenarios-banner p {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.scenarios-banner .arrow {
+  flex-shrink: 0;
+  font-size: 1.6rem;
+  color: var(--copper);
+  transition: transform 0.2s ease;
+}
+
+.scenarios-banner:hover .arrow {
+  transform: translateX(5px);
+}
+
+@media (max-width: 640px) {
+  .scenarios-banner {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
 .use-case-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
