@@ -477,21 +477,15 @@ $$ LANGUAGE plpgsql;</code></pre>
             <div class="comparison-col">
               <h3>⚡ With pg_durable</h3>
               <div class="comparison-with">
-                <pre><code><span class="cm">-- ETL pipeline: cleanup → transform → load</span>
+                <pre><code><span class="cm">-- Parallel aggregation: 3 queries fan out, then refresh the dashboard</span>
 <span class="kw">SELECT</span> <span class="fn">df.start</span>(
-    <span class="str">'DELETE FROM target
-     WHERE loaded_at &lt; now() - interval ''7 days'''</span>
+    <span class="str">'SELECT count(*) FROM users'</span>     <span class="op">&</span>
+    <span class="str">'SELECT count(*) FROM orders'</span>    <span class="op">&</span>
+    <span class="str">'SELECT sum(amount) FROM orders'</span>
 
-    <span class="op">~></span> <span class="str">'UPDATE staging
-        SET processed_at = now()
-        WHERE processed_at IS NULL'</span>
+    <span class="op">~></span> <span class="str">'refresh dashboard'</span>,
 
-    <span class="op">~></span> <span class="str">'INSERT INTO target (data, source_id)
-        SELECT data, source_id
-        FROM staging
-        WHERE processed_at IS NOT NULL'</span>,
-
-    <span class="str">'etl-pipeline'</span>
+    <span class="str">'metrics'</span>
 );</code></pre>
               </div>
             </div>
