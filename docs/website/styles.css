@@ -1414,6 +1414,24 @@ footer p {
   box-shadow: 0 16px 38px -10px rgba(44, 139, 255, 0.75);
 }
 
+.button-azure-outline {
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.98rem;
+  color: #aed6ff;
+  padding: 0.85rem 1.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(58, 160, 255, 0.45);
+  background: rgba(58, 160, 255, 0.08);
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.button-azure-outline:hover {
+  transform: translateY(-2px);
+  border-color: rgba(58, 160, 255, 0.75);
+  background: rgba(58, 160, 255, 0.16);
+}
+
 .horizon-note {
   color: var(--muted);
   font-size: 0.85rem;
