@@ -28,10 +28,6 @@ SELECT df.start(
 3. **Runtime executes durably** — each step is checkpointed, survives crashes via replay
 4. **Query progress** anytime from standard PostgreSQL tables
 
-## Relationship With duroxide-pg
-* Use pg_durable when you want pipelines or durable functions directly in SQL and PostgreSQL, no other moving parts needed.
-* Use [duroxide-pg](https://github.com/microsoft/duroxide-pg) when you prefer to define functions in Rust, Python, or Node, using PostgreSQL only as a persistent store.
-
 ## Prerequisites
 
 - PostgreSQL 17
@@ -160,31 +156,37 @@ See [tests/e2e/](tests/e2e/) for details.
 
 ## Architecture
 
-pg_durable consists of:
+pg_durable is a PostgreSQL extension (built with [pgrx](https://github.com/pgcentralfoundation/pgrx)) — everything runs inside the PostgreSQL server, no external services. The extension exposes a SQL DSL for building function graphs and registers a background worker that executes them durably on top of two lower-level Rust libraries:
 
-1. **SQL DSL Layer** — Operators that build function graphs
-2. **Duroxide Runtime** — Background worker that executes functions durably
-3. **PostgreSQL Tables** — Store function definitions, state, and history
-
-The runtime is powered by [duroxide](https://github.com/microsoft/duroxide), a durable task framework for Rust.
+- [duroxide](https://github.com/microsoft/duroxide) — a durable task framework providing the orchestration runtime (deterministic replay, checkpoints, sub-orchestrations, timers).
+- [duroxide-pg](https://github.com/microsoft/duroxide-pg) — a PostgreSQL-backed state provider for duroxide. It persists runtime state (instances, history, work queues) in a dedicated `duroxide.*` schema owned by the extension.
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│                         PostgreSQL                             │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │                pg_durable Extension (pgrx)               │  │
-│  │                                                          │  │
-│  │   DSL:  'sql' |=> 'name' ~> 'sql2'                      │  │
-│  │   Functions: durable.if() | durable.join() | durable.loop() │
-│  │                                                          │  │
-│  │   Duroxide Runtime (background worker)                   │  │
-│  │   • Polls for work, executes functions, checkpoints     │  │
-│  │                                                          │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                │
-│  df schema: nodes | instances | (duroxide internals)          │
-└────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                             PostgreSQL                             │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────────┐  │
+│  │                 pg_durable extension (pgrx)                  │  │
+│  │                                                              │  │
+│  │  SQL DSL     'sql' |=> 'name' ~> 'sql2'                      │  │
+│  │              df.if() | df.join() | df.loop()                 │  │
+│  │                                                              │  │
+│  │  Background worker (hosts the duroxide runtime in-process)   │  │
+│  │  ┌────────────────────────────────────────────────────────┐  │  │
+│  │  │  duroxide        (orchestration runtime)               │  │  │
+│  │  │  ┌──────────────────────────────────────────────────┐  │  │  │
+│  │  │  │  duroxide-pg   (PostgreSQL state provider)       │  │  │  │
+│  │  │  └──────────────────────────────────────────────────┘  │  │  │
+│  │  └────────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+│  Schemas                                                           │
+│    df.*         DSL graphs (nodes, instances, vars)                │
+│    duroxide.*   runtime state (owned by duroxide-pg)               │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+If you'd rather author durable workflows in Rust, Python, or Node while still persisting state in PostgreSQL, you can use duroxide and duroxide-pg directly from your host language — pg_durable is what you'd build on top of that pair when you'd prefer authoring in SQL.
 
 ## Status
 
