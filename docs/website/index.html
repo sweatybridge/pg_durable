@@ -750,9 +750,28 @@ SELECT job.id, v.ord, v.name, v.query, v.deps FROM job, (VALUES
                 <p>Near-real-time mirroring to Microsoft Fabric, VS Code integration, and GitHub Copilot — one ecosystem.</p>
               </div>
             </div>
+            <div class="horizon-pipeline">
+              <span class="hp-eyebrow">Built-in AI pipeline</span>
+              <h3>A high-level AI pipeline, durable on pg_durable</h3>
+              <p class="hp-sub">
+                HorizonDB layers a managed, end-to-end AI pipeline on top of pg_durable's durable
+                execution — every stage is checkpointed, retried, and crash-safe, from raw data to
+                ready-to-query vectors.
+              </p>
+              <div class="hp-flow">
+                <div class="hp-stage"><span class="hp-num">1</span><strong>Ingest</strong><span>Load docs &amp; data</span></div>
+                <span class="hp-arrow">→</span>
+                <div class="hp-stage"><span class="hp-num">2</span><strong>Chunk</strong><span>Split content</span></div>
+                <span class="hp-arrow">→</span>
+                <div class="hp-stage"><span class="hp-num">3</span><strong>Embed</strong><span>Vectorize</span></div>
+                <span class="hp-arrow">→</span>
+                <div class="hp-stage"><span class="hp-num">4</span><strong>Index</strong><span>DiskANN store</span></div>
+                <span class="hp-arrow">→</span>
+                <div class="hp-stage"><span class="hp-num">5</span><strong>Serve</strong><span>Search &amp; rank</span></div>
+              </div>
+            </div>
             <div class="horizon-cta">
               <a class="button-azure" href="https://aka.ms/horizondb_pg_durable">Explore Azure HorizonDB →</a>
-              <span class="horizon-note">Apply for the early preview.</span>
             </div>
           </div>
         </div>
