@@ -1,8 +1,25 @@
+<div align="center">
+
+<img src="docs/website/favicon.svg" alt="pg_durable logo" width="96" height="96" />
+
 # pg_durable
 
-**Durable SQL Functions for PostgreSQL**
+**Durable SQL workflows for PostgreSQL — no extra infra.**
 
-pg_durable brings durable execution to PostgreSQL. Define long-running, fault-tolerant functions entirely in SQL—no external orchestrators, no YAML, no separate deployment.
+Long-running, fault-tolerant functions defined entirely in SQL. Composable operators,
+automatic checkpointing, crash-safe replay, and parallel execution. Built on Postgres —
+no external orchestrators, no YAML, no separate deployment.
+
+[Website](https://microsoft.github.io/pg_durable/) · [Docs](docs/) · [Quick Example](#quick-example) · [GitHub](https://github.com/microsoft/pg_durable)
+
+[![License](https://img.shields.io/badge/license-PostgreSQL%20License-3d86c6.svg)](LICENSE.txt)
+[![Built for PostgreSQL 17](https://img.shields.io/badge/built%20for-PostgreSQL%2017-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+
+<br />
+
+<img src="docs/website/workflow-graph.svg" alt="A durable function fans out into three parallel queries — count users, count orders, sum revenue — that join into a dashboard step" width="480" />
+
+</div>
 
 ## Features
 
