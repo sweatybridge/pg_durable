@@ -150,16 +150,16 @@ main,
   gap: 0.55rem;
 }
 
-.brand-lockup {
-  width: 157px;
-  height: auto;
+.brand-mark {
+  width: 30px;
+  height: 30px;
   flex: 0 0 auto;
   filter: drop-shadow(0 0 10px var(--pg-blue-glow));
   transition: transform 0.25s ease;
 }
 
-.brand:hover .brand-lockup {
-  transform: scale(1.03);
+.brand:hover .brand-mark {
+  transform: rotate(-8deg) scale(1.05);
 }
 
 .brand-word {
@@ -1814,8 +1814,9 @@ footer p {
   .brand {
     font-size: 1.12rem;
   }
-  .brand-lockup {
-    width: 136px;
+  .brand-mark {
+    width: 26px;
+    height: 26px;
   }
   /* Comfortable reading size, avoid zoom-on-focus quirks */
   .subtitle,
