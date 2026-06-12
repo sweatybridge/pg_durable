@@ -12,9 +12,6 @@ on:
         required: true
         default: false
         type: boolean
-  push:
-    tags:
-      - 'v*'
   pull_request:
     paths:
       - '.github/workflows/package-release.yml'
@@ -33,7 +30,7 @@ env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CARGO_PGRX_VERSION: 0.16.1
-  PACKAGE_HTTP_FEATURE: http-allow-azure-domains
+  PACKAGE_HTTP_FEATURE: http-allow-all
 
 concurrency:
   group: package-release-${{ inputs.tag || github.ref }}
@@ -63,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        pg_version: [18]
         platform:
           - type: amd64
             docker_platform: linux/amd64
@@ -191,7 +188,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg_version: [17, 18]
+        pg_version: [18]
         platform:
           - type: amd64
             docker_platform: linux/amd64
